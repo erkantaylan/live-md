@@ -8,7 +8,11 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,11 +21,21 @@ import (
 //go:embed static
 var staticFiles embed.FS
 
-// Message sent to clients
+// WatchedFile represents a file being watched
+type WatchedFile struct {
+	Path       string    `json:"path"`
+	Name       string    `json:"name"`
+	TrackTime  time.Time `json:"trackTime"`
+	LastChange time.Time `json:"lastChange"`
+	HTML       string    `json:"html,omitempty"`
+}
+
+// Message sent to clients via WebSocket
 type Message struct {
-	Filename string `json:"filename,omitempty"`
-	HTML     string `json:"html,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Type  string        `json:"type"`
+	Files []WatchedFile `json:"files,omitempty"`
+	File  *WatchedFile  `json:"file,omitempty"`
+	Path  string        `json:"path,omitempty"`
 }
 
 // Client represents a connected WebSocket client
@@ -31,14 +45,17 @@ type Client struct {
 	send chan []byte
 }
 
-// Hub manages WebSocket clients and broadcasting
+// Hub manages files, watchers, and WebSocket clients
 type Hub struct {
 	clients    map[*Client]bool
 	broadcast  chan []byte
 	register   chan *Client
 	unregister chan *Client
-	mu         sync.RWMutex
-	current    Message
+
+	mu       sync.RWMutex
+	files    map[string]*WatchedFile
+	watchers map[string]*Watcher
+	renderer *Renderer
 }
 
 func NewHub() *Hub {
@@ -47,6 +64,9 @@ func NewHub() *Hub {
 		broadcast:  make(chan []byte, 256),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		files:      make(map[string]*WatchedFile),
+		watchers:   make(map[string]*Watcher),
+		renderer:   NewRenderer(),
 	}
 }
 
@@ -55,12 +75,8 @@ func (h *Hub) Run() {
 		select {
 		case client := <-h.register:
 			h.clients[client] = true
-			// Send current content to new client
-			h.mu.RLock()
-			if data, err := json.Marshal(h.current); err == nil {
-				client.send <- data
-			}
-			h.mu.RUnlock()
+			// Send current file list to new client
+			h.sendFileList(client)
 
 		case client := <-h.unregister:
 			if _, ok := h.clients[client]; ok {
@@ -81,22 +97,147 @@ func (h *Hub) Run() {
 	}
 }
 
-func (h *Hub) SetContent(filename, html string) {
-	h.mu.Lock()
-	h.current = Message{Filename: filename, HTML: html}
-	h.mu.Unlock()
+func (h *Hub) sendFileList(client *Client) {
+	h.mu.RLock()
+	files := make([]WatchedFile, 0, len(h.files))
+	for _, f := range h.files {
+		files = append(files, *f)
+	}
+	h.mu.RUnlock()
 
-	data, _ := json.Marshal(h.current)
+	msg := Message{Type: "files", Files: files}
+	data, _ := json.Marshal(msg)
+	client.send <- data
+}
+
+func (h *Hub) broadcastFileList() {
+	h.mu.RLock()
+	files := make([]WatchedFile, 0, len(h.files))
+	for _, f := range h.files {
+		files = append(files, *f)
+	}
+	h.mu.RUnlock()
+
+	msg := Message{Type: "files", Files: files}
+	data, _ := json.Marshal(msg)
 	h.broadcast <- data
 }
 
-func (h *Hub) SetError(errMsg string) {
+func (h *Hub) broadcastFileUpdate(file *WatchedFile) {
+	msg := Message{Type: "update", File: file}
+	data, _ := json.Marshal(msg)
+	h.broadcast <- data
+}
+
+func (h *Hub) AddFile(path string) error {
 	h.mu.Lock()
-	h.current = Message{Error: errMsg}
+
+	// Check if already watching
+	if _, exists := h.files[path]; exists {
+		h.mu.Unlock()
+		return fmt.Errorf("already watching: %s", path)
+	}
+
+	// Get file info
+	info, err := os.Stat(path)
+	if err != nil {
+		h.mu.Unlock()
+		return err
+	}
+
+	// Render content
+	html, err := h.renderer.Render(path)
+	if err != nil {
+		h.mu.Unlock()
+		return err
+	}
+
+	file := &WatchedFile{
+		Path:       path,
+		Name:       filepath.Base(path),
+		TrackTime:  time.Now(),
+		LastChange: info.ModTime(),
+		HTML:       html,
+	}
+	h.files[path] = file
+
+	// Start watcher
+	watcher := NewWatcher()
+	h.watchers[path] = watcher
+
 	h.mu.Unlock()
 
-	data, _ := json.Marshal(h.current)
+	// Watch for changes
+	watcher.Watch(path, func() {
+		h.mu.Lock()
+		f, exists := h.files[path]
+		if !exists {
+			h.mu.Unlock()
+			return
+		}
+
+		html, err := h.renderer.Render(path)
+		if err != nil {
+			log.Printf("Error rendering %s: %v", path, err)
+			h.mu.Unlock()
+			return
+		}
+
+		info, _ := os.Stat(path)
+		f.HTML = html
+		f.LastChange = info.ModTime()
+		h.mu.Unlock()
+
+		log.Printf("File updated: %s", filepath.Base(path))
+		h.broadcastFileUpdate(f)
+	})
+
+	h.broadcastFileList()
+	return nil
+}
+
+func (h *Hub) RemoveFile(path string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if _, exists := h.files[path]; !exists {
+		return fmt.Errorf("not watching: %s", path)
+	}
+
+	// Stop watcher
+	if w, exists := h.watchers[path]; exists {
+		w.Close()
+		delete(h.watchers, path)
+	}
+
+	delete(h.files, path)
+
+	// Broadcast removal
+	msg := Message{Type: "removed", Path: path}
+	data, _ := json.Marshal(msg)
 	h.broadcast <- data
+
+	return nil
+}
+
+func (h *Hub) GetFiles() []WatchedFile {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	files := make([]WatchedFile, 0, len(h.files))
+	for _, f := range h.files {
+		files = append(files, *f)
+	}
+	return files
+}
+
+func (h *Hub) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for _, w := range h.watchers {
+		w.Close()
+	}
 }
 
 // Server handles HTTP and WebSocket
@@ -104,13 +245,6 @@ type Server struct {
 	hub    *Hub
 	port   int
 	server *http.Server
-}
-
-func NewServer(hub *Hub, port int) *Server {
-	return &Server{
-		hub:  hub,
-		port: port,
-	}
 }
 
 var upgrader = websocket.Upgrader{
@@ -136,10 +270,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Writer goroutine
 	go func() {
-		defer func() {
-			conn.Close()
-		}()
-
+		defer conn.Close()
 		for message := range client.send {
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
@@ -148,13 +279,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Reader goroutine (just to detect disconnect)
+	// Reader goroutine (detect disconnect)
 	go func() {
 		defer func() {
 			s.hub.unregister <- client
 			conn.Close()
 		}()
-
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				break
@@ -163,7 +293,53 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func (s *Server) Start() error {
+func (s *Server) handleAddFile(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.hub.AddFile(req.Path); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleRemoveFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "Missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.hub.RemoveFile(path); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	files := s.hub.GetFiles()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(files)
+}
+
+func StartServer(port int) {
+	hub := NewHub()
+	go hub.Run()
+
+	s := &Server{
+		hub:  hub,
+		port: port,
+	}
+
 	mux := http.NewServeMux()
 
 	// Serve index.html at root
@@ -184,20 +360,45 @@ func (s *Server) Start() error {
 	// WebSocket endpoint
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
+	// API endpoints
+	mux.HandleFunc("/api/watch", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			s.handleAddFile(w, r)
+		case http.MethodDelete:
+			s.handleRemoveFile(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/files", s.handleListFiles)
+	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			hub.Close()
+			s.server.Shutdown(context.Background())
+		}()
+	})
+
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.port),
+		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
 	}
 
-	if err := s.server.ListenAndServe(); err != http.ErrServerClosed {
-		return err
-	}
-	return nil
-}
+	// Graceful shutdown on signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-func (s *Server) Shutdown(ctx context.Context) error {
-	if s.server != nil {
-		return s.server.Shutdown(ctx)
+	go func() {
+		<-sigChan
+		fmt.Println("\nShutting down...")
+		hub.Close()
+		removeLockFile()
+		s.server.Shutdown(context.Background())
+	}()
+
+	if err := s.server.ListenAndServe(); err != http.ErrServerClosed {
+		log.Fatalf("Server error: %v", err)
 	}
-	return nil
 }

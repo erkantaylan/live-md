@@ -8,16 +8,20 @@ Reading markdown in the terminal is painful - no formatting, code blocks are pla
 
 ## Solution
 
-LiveMD watches markdown files and serves them to your browser with live updates. No page refresh needed.
+LiveMD runs as a persistent server. Add markdown files to watch from the CLI, see them rendered in your browser with live updates.
 
 ```
-Terminal                          Browser (localhost:3000)
-─────────────────────────────────────────────────────────
-$ livemd README.md            →   Rendered markdown
-                                  - Headers formatted
-                                  - Code highlighted
-                                  - Tables rendered
-                                  - Updates on save
+Terminal                              Browser (localhost:3000)
+────────────────────────────────────────────────────────────────
+$ livemd start                    →   Server started
+
+$ livemd add README.md            →   Sidebar shows README.md
+                                      Content rendered on right
+
+$ livemd add docs/guide.md        →   Two files in sidebar
+                                      Click to switch
+
+[edit README.md]                  →   Browser updates live
 ```
 
 ## Install
@@ -35,35 +39,43 @@ make install
 ## Usage
 
 ```bash
-# Watch a file
-livemd README.md
+# Start the server
+livemd start
 
-# Custom port
-livemd --port 8080 docs/guide.md
+# Add files to watch
+livemd add README.md
+livemd add docs/guide.md
+
+# List watched files
+livemd list
+
+# Remove a file
+livemd remove README.md
+
+# Stop the server
+livemd stop
 ```
 
-Then open http://localhost:3000 in your browser.
+Open http://localhost:3000 in your browser.
 
 ## Make Commands
 
 ```
 make              Show help
 make build        Build the binary
-make run          Build and run with README.md
-make run FILE=x   Run with a specific file
-make run PORT=x   Run on a different port
+make run          Build and start the server
+make install      Install to /usr/local/bin
 make clean        Remove binary
 ```
 
 ## Features
 
-- WebSocket live updates (no refresh)
-- GitHub-flavored markdown (tables, task lists, autolinks)
-- Syntax highlighting for code blocks
-- Scroll position preserved on updates
-- Auto-reconnect if server restarts
-- Graceful shutdown (Ctrl+C)
-- Cross-platform (Linux, macOS, Windows)
+- **Persistent server** - Start once, add files anytime
+- **Sidebar UI** - File list with tracking and last change times
+- **WebSocket live updates** - No page refresh needed
+- **GitHub-flavored markdown** - Tables, task lists, autolinks
+- **Syntax highlighting** - Code blocks rendered with colors
+- **Cross-platform** - Works on Linux, macOS, Windows
 
 ## Tech Stack
 

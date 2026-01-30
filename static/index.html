@@ -7,14 +7,25 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <header>
-        <span class="logo">LiveMD</span>
-        <span class="filename" id="filename"></span>
-        <span class="status" id="status">connecting...</span>
-    </header>
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <span class="logo">LiveMD</span>
+            <span class="status" id="status">connecting...</span>
+        </div>
+        <div class="file-list" id="file-list">
+            <div class="empty-state">
+                <p>No files being watched</p>
+                <code>livemd add file.md</code>
+            </div>
+        </div>
+    </aside>
     <main>
         <article id="content">
-            <p>Connecting to server...</p>
+            <div class="welcome">
+                <h1>LiveMD</h1>
+                <p>Add a markdown file to get started:</p>
+                <pre><code>livemd add README.md</code></pre>
+            </div>
         </article>
     </main>
     <script src="/static/client.js"></script>
