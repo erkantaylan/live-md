@@ -152,10 +152,12 @@ func (h *Hub) broadcastLog(entry LogEntry) {
 func (h *Hub) AddFile(path string) error {
 	h.mu.Lock()
 
-	// Check if already watching
-	if _, exists := h.files[path]; exists {
-		h.mu.Unlock()
-		return fmt.Errorf("already watching: %s", path)
+	// Check if already watching (case-insensitive on Windows)
+	for existingPath := range h.files {
+		if PathsEqual(existingPath, path) {
+			h.mu.Unlock()
+			return fmt.Errorf("already watching: %s", filepath.Base(existingPath))
+		}
 	}
 
 	// Get file info
@@ -220,26 +222,36 @@ func (h *Hub) AddFile(path string) error {
 func (h *Hub) RemoveFile(path string) error {
 	h.mu.Lock()
 
-	file, exists := h.files[path]
-	if !exists {
+	// Find the actual key (case-insensitive on Windows)
+	var actualPath string
+	var file *WatchedFile
+	for existingPath, f := range h.files {
+		if PathsEqual(existingPath, path) {
+			actualPath = existingPath
+			file = f
+			break
+		}
+	}
+
+	if file == nil {
 		h.mu.Unlock()
 		return fmt.Errorf("not watching: %s", path)
 	}
 	name := file.Name
 
 	// Stop watcher
-	if w, exists := h.watchers[path]; exists {
+	if w, exists := h.watchers[actualPath]; exists {
 		w.Close()
-		delete(h.watchers, path)
+		delete(h.watchers, actualPath)
 	}
 
-	delete(h.files, path)
+	delete(h.files, actualPath)
 	h.mu.Unlock()
 
 	h.logger.Info(fmt.Sprintf("Stopped watching: %s", name))
 
 	// Broadcast removal
-	msg := Message{Type: "removed", Path: path}
+	msg := Message{Type: "removed", Path: actualPath}
 	data, _ := json.Marshal(msg)
 	h.broadcast <- data
 

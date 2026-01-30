@@ -120,3 +120,31 @@ func NormalizePath(path string) string {
 	converted := ConvertPath(path)
 	return filepath.Clean(converted)
 }
+
+// NormalizePathForComparison normalizes a path for comparison
+// On Windows, paths are case-insensitive
+func NormalizePathForComparison(path string) string {
+	cleaned := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(cleaned)
+	}
+	return cleaned
+}
+
+// PathsEqual checks if two paths refer to the same file
+// Handles case-insensitivity on Windows
+func PathsEqual(path1, path2 string) bool {
+	return NormalizePathForComparison(path1) == NormalizePathForComparison(path2)
+}
+
+// FindPathKey finds the actual key used in a map for a given path
+// Returns the key and true if found, empty string and false if not
+func FindPathKey(paths map[string]interface{}, path string) (string, bool) {
+	normalizedPath := NormalizePathForComparison(path)
+	for key := range paths {
+		if NormalizePathForComparison(key) == normalizedPath {
+			return key, true
+		}
+	}
+	return "", false
+}
