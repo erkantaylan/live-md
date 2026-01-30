@@ -1,4 +1,4 @@
-.PHONY: help build run install clean start stop add remove list
+.PHONY: help build run install clean start stop list watch unwatch
 
 .DEFAULT_GOAL := help
 
@@ -11,6 +11,10 @@ else
     RM = rm -f
 endif
 
+# Capture extra arguments for watch/unwatch
+ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+$(eval $(ARGS):;@:)
+
 # Build the binary
 build:
 	go build -buildvcs=false -o $(BINARY) .
@@ -22,7 +26,7 @@ run: build
 # Install globally (Unix only)
 install: build
 ifeq ($(OS),Windows_NT)
-	@echo "On Windows, copy $(BINARY) to a directory in your PATH manually"
+	@echo On Windows, copy $(BINARY) to a directory in your PATH manually
 else
 	cp $(BINARY) /usr/local/bin/
 endif
@@ -38,37 +42,39 @@ start: build
 stop:
 	./$(BINARY) stop
 
-add:
-ifndef FILE
-	@echo "Usage: make add FILE=path/to/file.md"
-else
-	./$(BINARY) add $(FILE)
-endif
-
-remove:
-ifndef FILE
-	@echo "Usage: make remove FILE=path/to/file.md"
-else
-	./$(BINARY) remove $(FILE)
-endif
-
 list:
 	./$(BINARY) list
+
+# Watch files: make watch file1.md file2.md
+watch:
+ifeq ($(ARGS),)
+	@echo Usage: make watch file1.md file2.md ...
+else
+	@for f in $(ARGS); do ./$(BINARY) add $$f; done
+endif
+
+# Unwatch files: make unwatch file1.md file2.md
+unwatch:
+ifeq ($(ARGS),)
+	@echo Usage: make unwatch file1.md file2.md ...
+else
+	@for f in $(ARGS); do ./$(BINARY) remove $$f; done
+endif
 
 # Show help
 help:
 	@echo LiveMD - Live markdown viewer
 	@echo ---
 	@echo Build:
-	@echo   make build ........... Build binary
-	@echo   make install ......... Install to PATH
-	@echo   make clean ........... Remove binary
+	@echo   make build .......... Build binary
+	@echo   make install ........ Install to PATH
+	@echo   make clean .......... Remove binary
 	@echo ---
 	@echo Server:
-	@echo   make start ........... Start server
-	@echo   make stop ............ Stop server
+	@echo   make start .......... Start server
+	@echo   make stop ........... Stop server
 	@echo ---
 	@echo Files:
-	@echo   make add FILE=x ...... Add file to watch
-	@echo   make remove FILE=x ... Remove file
-	@echo   make list ............ List watched files
+	@echo   make watch f1 f2 .... Add files to watch
+	@echo   make unwatch f1 f2 .. Remove files
+	@echo   make list ........... List watched files
