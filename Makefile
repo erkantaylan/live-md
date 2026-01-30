@@ -17,7 +17,7 @@ endif
 
 # Build the binary
 build:
-	go build -o $(BINARY) .
+	go build -buildvcs=false -o $(BINARY) .
 
 # Run with a file (usage: make run FILE=docs/guide.md)
 run: build
