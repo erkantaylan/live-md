@@ -1,4 +1,6 @@
-.PHONY: build run install clean
+.PHONY: help build run install clean
+
+.DEFAULT_GOAL := help
 
 # Default file to watch
 FILE ?= README.md
@@ -32,3 +34,15 @@ endif
 # Clean build artifacts
 clean:
 	$(RM) $(BINARY)
+
+# Show help
+help:
+	@echo "LiveMD - Live markdown viewer"
+	@echo ""
+	@echo "Usage:"
+	@echo "  make build              Build the binary"
+	@echo "  make run                Build and run with README.md"
+	@echo "  make run FILE=doc.md    Run with a specific file"
+	@echo "  make run PORT=8080      Run on a different port"
+	@echo "  make install            Install to /usr/local/bin"
+	@echo "  make clean              Remove binary"
