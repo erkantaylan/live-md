@@ -39,6 +39,23 @@
         return date.toLocaleDateString();
     }
 
+    function formatShortDateTime(isoString) {
+        const date = new Date(isoString);
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const mins = String(date.getMinutes()).padStart(2, '0');
+        return `${month}-${day} ${hours}:${mins}`;
+    }
+
+    function truncatePath(fullPath) {
+        const parts = fullPath.split('/');
+        if (parts.length <= 3) return fullPath;
+        const file = parts[parts.length - 1];
+        const parent = parts[parts.length - 2];
+        return `.../${parent}/${file}`;
+    }
+
     function formatLogTime(isoString) {
         const date = new Date(isoString);
         return date.toLocaleTimeString('en-US', { hour12: false });
@@ -57,11 +74,10 @@
 
         fileList.innerHTML = files.map(f => `
             <div class="file-item ${f.path === activeFile ? 'active' : ''}" data-path="${f.path}">
-                <button class="file-remove" data-path="${f.path}" title="Remove from watch">&times;</button>
-                <div class="file-name">${escapeHtml(f.name)}</div>
+                <button class="file-remove" data-path="${f.path}" title="Remove from watch">🗑️</button>
+                <div class="file-name" title="${escapeHtml(f.path)}">${escapeHtml(truncatePath(f.path))}</div>
                 <div class="file-meta">
-                    <span><span class="label">Tracking:</span> ${formatTime(f.trackTime)}</span>
-                    <span><span class="label">Changed:</span> ${formatTime(f.lastChange)}</span>
+                    <span class="label">Tracking:</span> ${formatShortDateTime(f.trackTime)}<span class="separator">|</span><span class="label">Changed:</span> ${formatShortDateTime(f.lastChange)}
                 </div>
             </div>
         `).join('');
