@@ -417,6 +417,13 @@ func StartServer(port int) {
 	})
 	mux.HandleFunc("/api/files", s.handleListFiles)
 	mux.HandleFunc("/api/logs", s.handleLogs)
+	mux.HandleFunc("/api/remove", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleRemoveFile(w, r)
+	})
 	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		go func() {
