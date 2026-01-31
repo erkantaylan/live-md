@@ -143,10 +143,12 @@
         );
 
         for (const file of sortedFiles) {
+            const watchIcon = file.active ? '👁️' : '📄';
+            const watchTitle = file.active ? 'Actively watching' : 'Registered (click to watch)';
             html += `
-                <div class="file-item tree-file ${file.path === activeFile ? 'active' : ''}" data-path="${escapeHtml(file.path)}" style="padding-left: ${indent}px">
+                <div class="file-item tree-file ${file.path === activeFile ? 'active' : ''} ${file.active ? 'watching' : 'registered'}" data-path="${escapeHtml(file.path)}" style="padding-left: ${indent}px">
                     <button class="file-remove" data-path="${escapeHtml(file.path)}" title="Remove from watch">🗑️</button>
-                    <span class="file-icon">📄</span>
+                    <span class="file-icon" title="${watchTitle}">${watchIcon}</span>
                     <div class="file-info">
                         <div class="file-name" title="${escapeHtml(file.path)}">${escapeHtml(file.displayName)}</div>
                         <div class="file-meta">
@@ -269,6 +271,7 @@
     }
 
     function selectFile(path) {
+        const previousFile = activeFile;
         activeFile = path;
         renderFileList();
 
@@ -277,6 +280,32 @@
             content.innerHTML = file.html;
             document.title = file.name + ' - LiveMD';
         }
+
+        // Activate watching for newly selected file
+        if (path && path !== previousFile) {
+            activateFile(path);
+        }
+
+        // Deactivate watching for previously selected file
+        if (previousFile && previousFile !== path) {
+            deactivateFile(previousFile);
+        }
+    }
+
+    function activateFile(path) {
+        fetch('/api/files/activate?path=' + encodeURIComponent(path), {
+            method: 'POST'
+        }).catch(err => {
+            console.error('Failed to activate file:', err);
+        });
+    }
+
+    function deactivateFile(path) {
+        fetch('/api/files/deactivate?path=' + encodeURIComponent(path), {
+            method: 'POST'
+        }).catch(err => {
+            console.error('Failed to deactivate file:', err);
+        });
     }
 
     function connect() {

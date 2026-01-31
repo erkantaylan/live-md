@@ -204,6 +204,19 @@ body {
     text-overflow: ellipsis;
 }
 
+.watch-indicator {
+    margin-right: 6px;
+    font-size: 12px;
+}
+
+.file-item.registered .file-name {
+    color: #888;
+}
+
+.file-item.watching .file-name {
+    color: #fff;
+}
+
 .file-remove {
     position: absolute;
     top: 4px;
