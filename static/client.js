@@ -73,9 +73,12 @@
         }
 
         fileList.innerHTML = files.map(f => `
-            <div class="file-item ${f.path === activeFile ? 'active' : ''}" data-path="${f.path}">
-                <button class="file-remove" data-path="${f.path}" title="Remove from watch">🗑️</button>
-                <div class="file-name" title="${escapeHtml(f.path)}">${escapeHtml(truncatePath(f.path))}</div>
+            <div class="file-item ${f.path === activeFile ? 'active' : ''} ${f.active ? 'watching' : 'registered'}" data-path="${f.path}">
+                <button class="file-remove" data-path="${f.path}" title="Remove from list">🗑️</button>
+                <div class="file-name" title="${escapeHtml(f.path)}">
+                    <span class="watch-indicator" title="${f.active ? 'Actively watching' : 'Registered (not watching)'}">${f.active ? '👁️' : '📄'}</span>
+                    ${escapeHtml(truncatePath(f.path))}
+                </div>
                 <div class="file-meta">
                     <span class="label">Tracking:</span> ${formatShortDateTime(f.trackTime)}<span class="separator">|</span><span class="label">Changed:</span> ${formatShortDateTime(f.lastChange)}
                 </div>
@@ -136,6 +139,7 @@
     }
 
     function selectFile(path) {
+        const previousFile = activeFile;
         activeFile = path;
         renderFileList();
 
@@ -144,6 +148,32 @@
             content.innerHTML = file.html;
             document.title = file.name + ' - LiveMD';
         }
+
+        // Activate watching for newly selected file
+        if (path && path !== previousFile) {
+            activateFile(path);
+        }
+
+        // Deactivate watching for previously selected file
+        if (previousFile && previousFile !== path) {
+            deactivateFile(previousFile);
+        }
+    }
+
+    function activateFile(path) {
+        fetch('/api/files/activate?path=' + encodeURIComponent(path), {
+            method: 'POST'
+        }).catch(err => {
+            console.error('Failed to activate file:', err);
+        });
+    }
+
+    function deactivateFile(path) {
+        fetch('/api/files/deactivate?path=' + encodeURIComponent(path), {
+            method: 'POST'
+        }).catch(err => {
+            console.error('Failed to deactivate file:', err);
+        });
     }
 
     function connect() {

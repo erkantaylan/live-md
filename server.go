@@ -28,6 +28,7 @@ type WatchedFile struct {
 	TrackTime  time.Time `json:"trackTime"`
 	LastChange time.Time `json:"lastChange"`
 	HTML       string    `json:"html,omitempty"`
+	Active     bool      `json:"active"` // true if actively being watched by fsnotify
 }
 
 // Message sent to clients via WebSocket
@@ -150,13 +151,17 @@ func (h *Hub) broadcastLog(entry LogEntry) {
 }
 
 func (h *Hub) AddFile(path string) error {
+	return h.AddFileWithActive(path, false)
+}
+
+func (h *Hub) AddFileWithActive(path string, active bool) error {
 	h.mu.Lock()
 
-	// Check if already watching (case-insensitive on Windows)
+	// Check if already registered (case-insensitive on Windows)
 	for existingPath := range h.files {
 		if PathsEqual(existingPath, path) {
 			h.mu.Unlock()
-			return fmt.Errorf("already watching: %s", filepath.Base(existingPath))
+			return fmt.Errorf("already registered: %s", filepath.Base(existingPath))
 		}
 	}
 
@@ -180,20 +185,41 @@ func (h *Hub) AddFile(path string) error {
 		TrackTime:  time.Now(),
 		LastChange: info.ModTime(),
 		HTML:       html,
+		Active:     active,
 	}
 	h.files[path] = file
 
-	// Start watcher
+	h.mu.Unlock()
+
+	// Only start watcher if active
+	if active {
+		h.startWatcher(path)
+		h.logger.Info(fmt.Sprintf("Started watching: %s", filepath.Base(path)))
+	} else {
+		h.logger.Info(fmt.Sprintf("Registered: %s", filepath.Base(path)))
+	}
+
+	h.broadcastFileList()
+	return nil
+}
+
+func (h *Hub) startWatcher(path string) {
+	h.mu.Lock()
+	// Check if watcher already exists
+	if _, exists := h.watchers[path]; exists {
+		h.mu.Unlock()
+		return
+	}
+
 	watcher := NewWatcher()
 	h.watchers[path] = watcher
-
 	h.mu.Unlock()
 
 	// Watch for changes
 	watcher.Watch(path, func() {
 		h.mu.Lock()
 		f, exists := h.files[path]
-		if !exists {
+		if !exists || !f.Active {
 			h.mu.Unlock()
 			return
 		}
@@ -213,8 +239,88 @@ func (h *Hub) AddFile(path string) error {
 		h.logger.Info(fmt.Sprintf("File changed: %s", filepath.Base(path)))
 		h.broadcastFileUpdate(f)
 	})
+}
 
-	h.logger.Info(fmt.Sprintf("Started watching: %s", filepath.Base(path)))
+func (h *Hub) ActivateFile(path string) error {
+	h.mu.Lock()
+
+	// Find the file (case-insensitive on Windows)
+	var actualPath string
+	var file *WatchedFile
+	for existingPath, f := range h.files {
+		if PathsEqual(existingPath, path) {
+			actualPath = existingPath
+			file = f
+			break
+		}
+	}
+
+	if file == nil {
+		h.mu.Unlock()
+		return fmt.Errorf("file not registered: %s", path)
+	}
+
+	if file.Active {
+		h.mu.Unlock()
+		return nil // Already active
+	}
+
+	// Refresh content before activating
+	html, err := h.renderer.Render(actualPath)
+	if err != nil {
+		h.mu.Unlock()
+		return err
+	}
+
+	info, _ := os.Stat(actualPath)
+	file.HTML = html
+	file.LastChange = info.ModTime()
+	file.Active = true
+	h.mu.Unlock()
+
+	// Start watching
+	h.startWatcher(actualPath)
+
+	h.logger.Info(fmt.Sprintf("Activated watching: %s", filepath.Base(actualPath)))
+	h.broadcastFileList()
+	return nil
+}
+
+func (h *Hub) DeactivateFile(path string) error {
+	h.mu.Lock()
+
+	// Find the file (case-insensitive on Windows)
+	var actualPath string
+	var file *WatchedFile
+	for existingPath, f := range h.files {
+		if PathsEqual(existingPath, path) {
+			actualPath = existingPath
+			file = f
+			break
+		}
+	}
+
+	if file == nil {
+		h.mu.Unlock()
+		return fmt.Errorf("file not registered: %s", path)
+	}
+
+	if !file.Active {
+		h.mu.Unlock()
+		return nil // Already inactive
+	}
+
+	file.Active = false
+
+	// Stop watcher
+	if w, exists := h.watchers[actualPath]; exists {
+		w.Close()
+		delete(h.watchers, actualPath)
+	}
+
+	h.mu.Unlock()
+
+	h.logger.Info(fmt.Sprintf("Deactivated watching: %s", filepath.Base(actualPath)))
 	h.broadcastFileList()
 	return nil
 }
@@ -333,14 +439,45 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAddFile(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Active bool   `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	if err := s.hub.AddFile(req.Path); err != nil {
+	if err := s.hub.AddFileWithActive(req.Path, req.Active); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleActivateFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "Missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.hub.ActivateFile(path); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleDeactivateFile(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "Missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.hub.DeactivateFile(path); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -416,6 +553,20 @@ func StartServer(port int) {
 		}
 	})
 	mux.HandleFunc("/api/files", s.handleListFiles)
+	mux.HandleFunc("/api/files/activate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleActivateFile(w, r)
+	})
+	mux.HandleFunc("/api/files/deactivate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleDeactivateFile(w, r)
+	})
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/remove", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
