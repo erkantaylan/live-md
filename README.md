@@ -46,6 +46,10 @@ livemd start
 livemd add README.md
 livemd add docs/guide.md
 
+# Add entire folder recursively
+livemd add ./docs -r
+livemd add ./src -r --filter "md,go,js"
+
 # List watched files
 livemd list
 
@@ -69,15 +73,18 @@ make clean        Remove binary
 make start        Start the server
 make stop         Stop the server
 
-make watch f1 f2  Add files to watch
-make unwatch f1   Remove files from watch
-make list         List watched files
+make watch f1 f2      Add files to watch
+make watch-dir ./dir  Add folder recursively
+make unwatch f1       Remove files from watch
+make list             List watched files
 ```
 
 ## Features
 
 - **Persistent server** - Start once, add files anytime
-- **Sidebar UI** - File list with tracking and last change times
+- **Tree view sidebar** - Collapsible folder structure like a solution explorer
+- **Lazy watching** - Files are registered but only actively watched when selected (saves system resources)
+- **Recursive folder watching** - Add entire directories with `livemd add ./folder -r`
 - **WebSocket live updates** - No page refresh needed
 - **GitHub-flavored markdown** - Tables, task lists, autolinks
 - **Syntax highlighting** - Code blocks in markdown and standalone code files (50+ languages)

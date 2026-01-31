@@ -1,4 +1,4 @@
-.PHONY: help build run install install-user uninstall uninstall-user clean start stop list watch unwatch daemon daemon-stop update
+.PHONY: help build run install install-user uninstall uninstall-user clean start stop list watch watch-dir unwatch daemon daemon-stop update
 
 .DEFAULT_GOAL := help
 
@@ -103,6 +103,18 @@ else
 endif
 endif
 
+# Watch folder recursively: make watch-dir ./docs
+watch-dir:
+ifeq ($(ARGS),)
+	@echo Usage: make watch-dir ./folder
+else
+ifeq ($(OS),Windows_NT)
+	@echo Recursive watch not supported on Windows via make
+else
+	./$(BINARY) add $(firstword $(ARGS)) -r
+endif
+endif
+
 # Unwatch files: make unwatch file1.md file2.md
 unwatch:
 ifeq ($(ARGS),)
@@ -187,5 +199,6 @@ help:
 	@echo ---
 	@echo Files:
 	@echo "  make watch f1 f2 ....... Add files to watch"
+	@echo "  make watch-dir ./dir ... Add folder recursively"
 	@echo "  make unwatch f1 f2 ..... Remove files"
 	@echo "  make list .............. List watched files"
