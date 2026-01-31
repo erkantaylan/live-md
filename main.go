@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -90,7 +91,7 @@ func cmdStart() {
 	// Check if already running
 	if lockPort, err := readLockFile(); err == nil {
 		fmt.Printf("LiveMD already running on port %d\n", lockPort)
-		fmt.Printf("  http://localhost:%d\n", lockPort)
+		printServerAddresses(lockPort)
 		os.Exit(1)
 	}
 
@@ -102,12 +103,64 @@ func cmdStart() {
 
 	// Start server
 	fmt.Printf("\n  LiveMD server started\n")
-	fmt.Printf("  http://localhost:%d\n\n", *port)
+	printServerAddresses(*port)
 	fmt.Println("  Use 'livemd add <file.md>' to watch files")
 	fmt.Println("  Use 'livemd stop' to stop the server")
 	fmt.Println()
 
 	StartServer(*port)
+}
+
+// getNetworkAddresses returns all non-loopback IPv4 addresses
+func getNetworkAddresses() []string {
+	var addresses []string
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return addresses
+	}
+
+	for _, iface := range ifaces {
+		// Skip down or loopback interfaces
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Only include IPv4 addresses
+			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+				continue
+			}
+
+			addresses = append(addresses, ip.String())
+		}
+	}
+
+	return addresses
+}
+
+// printServerAddresses prints localhost and all network interface addresses
+func printServerAddresses(port int) {
+	fmt.Printf("  http://localhost:%d\n", port)
+
+	networkAddrs := getNetworkAddresses()
+	for _, addr := range networkAddrs {
+		fmt.Printf("  http://%s:%d\n", addr, port)
+	}
+	fmt.Println()
 }
 
 func cmdAdd() {
