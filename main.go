@@ -1,3 +1,30 @@
+// Package main implements the LiveMD command-line tool for live markdown preview.
+//
+// LiveMD is a local development server that renders markdown files in real-time,
+// automatically refreshing the browser when files change. It supports watching
+// individual files or entire directories with configurable file type filtering.
+//
+// # Architecture
+//
+// The application follows a client-server model:
+//   - Server process: Started with 'livemd start', runs in foreground serving HTTP/WebSocket
+//   - CLI commands: Communicate with server via HTTP API (add, remove, list, stop)
+//   - Lock file: Stores server port for CLI-server communication (~/.livemd.lock)
+//
+// # Commands
+//
+//   - start: Launch the server on specified port (default 3000)
+//   - add: Add file(s) to watch list, supports recursive directory scanning
+//   - remove: Stop watching a specific file
+//   - list: Display all currently watched files
+//   - stop: Gracefully shutdown the server
+//
+// # Usage
+//
+//	livemd start              # Start server
+//	livemd add README.md      # Watch a file
+//	livemd add ./docs -r      # Watch directory recursively
+//	livemd stop               # Stop server
 package main
 
 import (
@@ -15,7 +42,9 @@ import (
 	"strings"
 )
 
-// Supported file extensions for watching
+// defaultExtensions defines the file types watched when recursively adding directories.
+// These extensions cover common documentation, code, and configuration files that
+// developers typically want to preview or monitor during development.
 var defaultExtensions = []string{
 	".md", ".markdown",
 	".go",
@@ -29,6 +58,9 @@ var defaultExtensions = []string{
 	".txt",
 }
 
+// main is the entry point for the livemd CLI tool.
+// It parses the first argument as a command and dispatches to the appropriate handler.
+// If no command is provided or an unknown command is given, it displays usage information.
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `LiveMD - Live markdown viewer
@@ -83,6 +115,10 @@ Examples:
 	}
 }
 
+// cmdStart handles the "livemd start" command.
+// It launches the HTTP server on the specified port (default 3000).
+// If the server is already running (detected via lock file), it exits with an error.
+// The server runs in the foreground until stopped via "livemd stop" or SIGINT.
 func cmdStart() {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	port := fs.Int("port", 3000, "port to serve on")
@@ -111,7 +147,9 @@ func cmdStart() {
 	StartServer(*port)
 }
 
-// getNetworkAddresses returns all non-loopback IPv4 addresses
+// getNetworkAddresses returns all non-loopback IPv4 addresses from active network interfaces.
+// This enables displaying accessible URLs for LAN devices to connect to the server.
+// Loopback addresses (127.x.x.x) and IPv6 addresses are excluded from the results.
 func getNetworkAddresses() []string {
 	var addresses []string
 
@@ -152,7 +190,9 @@ func getNetworkAddresses() []string {
 	return addresses
 }
 
-// printServerAddresses prints localhost and all network interface addresses
+// printServerAddresses prints localhost and all network interface addresses to stdout.
+// This provides users with all URLs that can be used to access the server, including
+// localhost for local access and LAN IPs for access from other devices on the network.
 func printServerAddresses(port int) {
 	fmt.Printf("  http://localhost:%d\n", port)
 
@@ -163,6 +203,15 @@ func printServerAddresses(port int) {
 	fmt.Println()
 }
 
+// cmdAdd handles the "livemd add" command.
+// It adds files or directories to the server's watch list via the HTTP API.
+//
+// Flags:
+//   - -r, --recursive: Enable recursive directory scanning
+//   - --filter: Comma-separated list of extensions to include (e.g., "md,go,js")
+//
+// The function handles both WSL/Windows path conversion and supports adding
+// single files or entire directories with extension filtering.
 func cmdAdd() {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
 	recursive := fs.Bool("r", false, "recursively add files from folder")
@@ -248,6 +297,8 @@ func cmdAdd() {
 	addSingleFile(absPath, port)
 }
 
+// addSingleFile sends a POST request to the server's /api/watch endpoint
+// to add a single file to the watch list. It reports success or failure to stdout/stderr.
 func addSingleFile(absPath string, port int) {
 	body, _ := json.Marshal(map[string]string{"path": absPath})
 	resp, err := http.Post(fmt.Sprintf("http://localhost:%d/api/watch", port), "application/json", bytes.NewReader(body))
@@ -266,6 +317,10 @@ func addSingleFile(absPath string, port int) {
 	fmt.Printf("Watching: %s\n", filepath.Base(absPath))
 }
 
+// addFolder recursively scans a directory and adds all matching files to the watch list.
+// It filters files by extension using either defaultExtensions or a custom filter.
+// Hidden directories (starting with ".") are skipped during traversal.
+// If more than 500 files are found, it prompts for user confirmation before proceeding.
 func addFolder(folderPath string, port int, filterExts string) {
 	// Build extension filter
 	allowedExts := defaultExtensions
@@ -365,6 +420,9 @@ func addFolder(folderPath string, port int, filterExts string) {
 	fmt.Println()
 }
 
+// cmdRemove handles the "livemd remove" command.
+// It sends a DELETE request to the server's /api/watch endpoint to stop watching a file.
+// The file must be specified by its path, which will be resolved to an absolute path.
 func cmdRemove() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "Usage: livemd remove <file.md>")
@@ -401,6 +459,9 @@ func cmdRemove() {
 	fmt.Printf("Stopped watching: %s\n", filepath.Base(absPath))
 }
 
+// cmdList handles the "livemd list" command.
+// It retrieves and displays all currently watched files from the server's /api/files endpoint.
+// For each file, it shows the filename, full path, tracking start time, and last change time.
 func cmdList() {
 	port, err := readLockFile()
 	if err != nil {
@@ -434,6 +495,9 @@ func cmdList() {
 	}
 }
 
+// cmdStop handles the "livemd stop" command.
+// It sends a POST request to the server's /api/shutdown endpoint to initiate graceful shutdown.
+// The lock file is removed regardless of whether the server responds (it may have already exited).
 func cmdStop() {
 	port, err := readLockFile()
 	if err != nil {
@@ -455,7 +519,15 @@ func cmdStop() {
 }
 
 // Lock file helpers
+//
+// The lock file stores the server's port number and serves two purposes:
+// 1. Prevents multiple server instances from running simultaneously
+// 2. Allows CLI commands to discover and communicate with the running server
+//
+// Location: ~/.livemd.lock (Unix) or %APPDATA%/livemd.lock (Windows)
 
+// getLockFilePath returns the platform-specific path for the lock file.
+// On Windows, it uses APPDATA or USERPROFILE. On Unix systems, it uses the home directory.
 func getLockFilePath() string {
 	if runtime.GOOS == "windows" {
 		appData := os.Getenv("APPDATA")
@@ -468,10 +540,14 @@ func getLockFilePath() string {
 	return filepath.Join(home, ".livemd.lock")
 }
 
+// writeLockFile creates the lock file containing the server's port number.
+// Called by cmdStart after verifying no existing server is running.
 func writeLockFile(port int) error {
 	return os.WriteFile(getLockFilePath(), []byte(strconv.Itoa(port)), 0644)
 }
 
+// readLockFile reads the port number from the lock file.
+// Returns an error if the lock file doesn't exist (server not running) or is invalid.
 func readLockFile() (int, error) {
 	data, err := os.ReadFile(getLockFilePath())
 	if err != nil {
@@ -480,6 +556,8 @@ func readLockFile() (int, error) {
 	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
 
+// removeLockFile deletes the lock file during server shutdown.
+// Errors are silently ignored as the file may already be absent.
 func removeLockFile() {
 	os.Remove(getLockFilePath())
 }
