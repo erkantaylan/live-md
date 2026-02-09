@@ -140,7 +140,7 @@ body {
 
 /* File item */
 .file-item {
-    padding: 6px 16px;
+    padding: 3px 16px;
     cursor: pointer;
     border-left: 3px solid transparent;
     transition: background 0.15s;
@@ -158,14 +158,13 @@ body {
 
 .tree-file {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 6px;
 }
 
 .tree-file .file-icon {
     font-size: 14px;
     flex-shrink: 0;
-    margin-top: 2px;
 }
 
 .tree-file .file-info {
@@ -178,8 +177,6 @@ body {
     font-size: 13px;
     font-weight: 500;
     color: #fff;
-    margin-bottom: 2px;
-    word-break: break-all;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -236,32 +233,21 @@ body {
     transform: scale(1.1);
 }
 
-.file-meta {
-    font-size: 11px;
-    color: #888;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.file-meta .meta-label {
-    color: #666;
-}
 
 /* Main content */
 main {
     flex: 1;
     overflow: hidden;
-    background: #1e1e1e;
+    background: #fff;
     display: flex;
     flex-direction: column;
 }
 
 /* Content header / toolbar */
 .content-header {
-    padding: 8px 16px;
-    background: #252526;
-    border-bottom: 1px solid #333;
+    padding: 6px 16px;
+    background: #f3f3f3;
+    border-bottom: 1px solid #e0e0e0;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -271,34 +257,39 @@ main {
 .content-header-filename {
     font-size: 13px;
     font-weight: 500;
-    color: #fff;
+    color: #333;
     white-space: nowrap;
 }
 
 .content-header-path {
     font-size: 11px;
-    color: #666;
+    color: #888;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.content-header-changed {
+    font-size: 11px;
+    color: #888;
+    white-space: nowrap;
+    margin-left: auto;
 }
 
 article {
     flex: 1;
     overflow-y: auto;
     padding: 16px 24px;
-    background: #1e1e1e;
-    color: #d4d4d4;
 }
 
 .welcome {
     text-align: center;
     padding: 60px 20px;
-    color: #888;
+    color: #666;
 }
 
 .welcome h1 {
-    color: #ccc;
+    color: #333;
     margin-bottom: 16px;
 }
 
@@ -306,13 +297,12 @@ article {
     display: inline-block;
     margin-top: 16px;
     padding: 12px 20px;
-    background: #2d2d2d;
+    background: #f6f8fa;
     border-radius: 6px;
 }
 
 .welcome code {
     font-size: 14px;
-    color: #9cdcfe;
 }
 
 /* Log entries */

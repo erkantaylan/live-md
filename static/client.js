@@ -13,6 +13,7 @@
     const versionLabel = document.getElementById('version-label');
     const contentHeaderFilename = document.getElementById('content-header-filename');
     const contentHeaderPath = document.getElementById('content-header-path');
+    const contentHeaderChanged = document.getElementById('content-header-changed');
 
     let ws;
     let reconnectDelay = 1000;
@@ -207,10 +208,7 @@
                     <button class="file-remove" data-path="${escapeHtml(file.path)}" title="Remove from watch">&#128465;&#65039;</button>
                     <span class="file-icon" title="${watchTitle}">${watchIcon}</span>
                     <div class="file-info">
-                        <div class="file-name" title="${escapeHtml(file.path)}">${escapeHtml(file.displayName)}</div>
-                        <div class="file-meta">
-                            ${isDeleted ? '<span class="has-text-danger">deleted</span>' : '<span class="meta-label">Changed:</span> ' + formatShortDateTime(file.lastChange)}
-                        </div>
+                        <div class="file-name" title="${escapeHtml(file.path)}">${isDeleted ? '<span class="has-text-danger">' + escapeHtml(file.displayName) + '</span>' : escapeHtml(file.displayName)}</div>
                     </div>
                 </div>
             `;
@@ -334,9 +332,11 @@
         if (file) {
             contentHeaderFilename.textContent = file.name;
             contentHeaderPath.textContent = file.path;
+            contentHeaderChanged.textContent = file.lastChange ? 'Changed: ' + formatShortDateTime(file.lastChange) : '';
         } else {
             contentHeaderFilename.textContent = 'No file selected';
             contentHeaderPath.textContent = '';
+            contentHeaderChanged.textContent = '';
         }
     }
 
