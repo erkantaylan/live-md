@@ -9,13 +9,27 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const githubRepo = "erkantaylan/livemd"
 
 type githubRelease struct {
-	TagName string        `json:"tag_name"`
-	Assets  []githubAsset `json:"assets"`
+	TagName     string        `json:"tag_name"`
+	Name        string        `json:"name"`
+	Body        string        `json:"body"`
+	PublishedAt string        `json:"published_at"`
+	HTMLURL     string        `json:"html_url"`
+	Assets      []githubAsset `json:"assets"`
+}
+
+// VersionInfo represents the current and latest version for the API
+type VersionInfo struct {
+	Current       string `json:"current"`
+	Latest        string `json:"latest"`
+	UpdateAvail   bool   `json:"updateAvailable"`
+	LatestURL     string `json:"latestUrl,omitempty"`
+	CheckedAt     string `json:"checkedAt"`
 }
 
 type githubAsset struct {
@@ -184,6 +198,45 @@ func replaceUnix(execPath string, newBinary []byte) error {
 		return err
 	}
 	return nil
+}
+
+// fetchAllReleases returns all GitHub releases (for changelog display).
+func fetchAllReleases() ([]githubRelease, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases", githubRepo)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var releases []githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, err
+	}
+	return releases, nil
+}
+
+// CheckForUpdate checks if a newer version is available and returns version info.
+func CheckForUpdate() VersionInfo {
+	info := VersionInfo{
+		Current:   Version,
+		CheckedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	release, err := fetchLatestRelease()
+	if err != nil {
+		info.Latest = Version
+		return info
+	}
+
+	info.Latest = release.TagName
+	info.LatestURL = release.HTMLURL
+	info.UpdateAvail = isNewer(Version, release.TagName)
+	return info
 }
 
 // replaceWindows renames the current exe to .bak, writes the new one in place.

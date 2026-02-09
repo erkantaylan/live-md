@@ -2,10 +2,15 @@
 (function() {
     const fileList = document.getElementById('file-list');
     const logList = document.getElementById('log-list');
+    const changelogList = document.getElementById('changelog-list');
     const content = document.getElementById('content');
     const status = document.getElementById('status');
     const deletedBar = document.getElementById('deleted-bar');
     const removeDeletedBtn = document.getElementById('remove-deleted-btn');
+    const checkUpdateBtn = document.getElementById('check-update-btn');
+    const updateBanner = document.getElementById('update-banner');
+    const updateText = document.getElementById('update-text');
+    const versionLabel = document.getElementById('version-label');
 
     let ws;
     let reconnectDelay = 1000;
@@ -15,6 +20,7 @@
     let logs = [];
     let activeFile = null;
     let collapsedFolders = new Set();
+    let changelogLoaded = false;
 
     // Tab switching
     document.querySelectorAll('.tabs li').forEach(li => {
@@ -23,6 +29,9 @@
             document.querySelectorAll('.tab-content').forEach(t => t.classList.add('is-hidden'));
             li.classList.add('is-active');
             document.getElementById(li.dataset.tab + '-tab').classList.remove('is-hidden');
+            if (li.dataset.tab === 'changelog') {
+                loadChangelog();
+            }
         });
     });
 
@@ -32,6 +41,65 @@
             console.error('Failed to remove deleted files:', err);
         });
     });
+
+    // Check for updates button
+    checkUpdateBtn.addEventListener('click', () => {
+        checkUpdateBtn.textContent = 'Checking...';
+        checkUpdateBtn.disabled = true;
+        checkForUpdates();
+    });
+
+    function checkForUpdates() {
+        fetch('/api/version')
+            .then(r => r.json())
+            .then(info => {
+                versionLabel.textContent = 'livemd ' + info.current;
+                checkUpdateBtn.textContent = 'Check updates';
+                checkUpdateBtn.disabled = false;
+
+                if (info.updateAvailable) {
+                    updateText.innerHTML = 'Update available: <a href="' + escapeHtml(info.latestUrl) + '" target="_blank">' + escapeHtml(info.latest) + '</a>';
+                    updateBanner.classList.remove('is-hidden');
+                } else {
+                    updateBanner.classList.add('is-hidden');
+                }
+            })
+            .catch(err => {
+                console.error('Failed to check for updates:', err);
+                checkUpdateBtn.textContent = 'Check updates';
+                checkUpdateBtn.disabled = false;
+            });
+    }
+
+    function loadChangelog() {
+        if (changelogLoaded) return;
+        changelogList.innerHTML = '<div class="empty-state"><p>Loading changelog...</p></div>';
+
+        fetch('/api/releases')
+            .then(r => r.json())
+            .then(releases => {
+                changelogLoaded = true;
+                if (!releases || releases.length === 0) {
+                    changelogList.innerHTML = '<div class="empty-state"><p>No releases found</p></div>';
+                    return;
+                }
+                changelogList.innerHTML = releases.map(r => {
+                    const date = r.published_at ? new Date(r.published_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+                    const title = r.name || r.tag_name;
+                    return `
+                        <div class="changelog-entry">
+                            <div class="changelog-tag"><a href="${escapeHtml(r.html_url)}" target="_blank">${escapeHtml(title)}</a></div>
+                            <div class="changelog-date">${escapeHtml(r.tag_name)} &middot; ${date}</div>
+                            ${r.body ? '<div class="changelog-body">' + escapeHtml(r.body) + '</div>' : ''}
+                        </div>
+                    `;
+                }).join('');
+            })
+            .catch(err => {
+                console.error('Failed to load changelog:', err);
+                changelogList.innerHTML = '<div class="empty-state"><p>Failed to load changelog</p></div>';
+            });
+    }
 
     function formatShortDateTime(isoString) {
         const date = new Date(isoString);
@@ -306,6 +374,8 @@
             status.textContent = 'live';
             status.className = 'tag is-success is-light';
             reconnectDelay = 1000;
+            // Check version on connect
+            checkForUpdates();
         };
 
         ws.onmessage = function(event) {

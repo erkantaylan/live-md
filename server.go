@@ -552,6 +552,22 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(logs)
 }
 
+func (s *Server) handleReleases(w http.ResponseWriter, r *http.Request) {
+	releases, err := fetchAllReleases()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(releases)
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	info := CheckForUpdate()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
+}
+
 func StartServer(port int) {
 	hub := NewHub()
 	go hub.Run()
@@ -617,6 +633,8 @@ func StartServer(port int) {
 		json.NewEncoder(w).Encode(map[string]int{"removed": count})
 	})
 	mux.HandleFunc("/api/logs", s.handleLogs)
+	mux.HandleFunc("/api/releases", s.handleReleases)
+	mux.HandleFunc("/api/version", s.handleVersion)
 	mux.HandleFunc("/api/remove", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -637,6 +655,17 @@ func StartServer(port int) {
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
 	}
+
+	// Check for updates in background on startup
+	go func() {
+		time.Sleep(2 * time.Second) // Wait for server to be ready
+		if Version != "dev" {
+			info := CheckForUpdate()
+			if info.UpdateAvail {
+				hub.logger.Info(fmt.Sprintf("Update available: %s (current: %s)", info.Latest, info.Current))
+			}
+		}
+	}()
 
 	// Graceful shutdown on signals
 	sigChan := make(chan os.Signal, 1)
