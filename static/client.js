@@ -11,6 +11,8 @@
     const updateBanner = document.getElementById('update-banner');
     const updateText = document.getElementById('update-text');
     const versionLabel = document.getElementById('version-label');
+    const contentHeaderFilename = document.getElementById('content-header-filename');
+    const contentHeaderPath = document.getElementById('content-header-path');
 
     let ws;
     let reconnectDelay = 1000;
@@ -328,6 +330,16 @@
         return div.innerHTML;
     }
 
+    function updateContentHeader(file) {
+        if (file) {
+            contentHeaderFilename.textContent = file.name;
+            contentHeaderPath.textContent = file.path;
+        } else {
+            contentHeaderFilename.textContent = 'No file selected';
+            contentHeaderPath.textContent = '';
+        }
+    }
+
     function selectFile(path) {
         const file = files.find(f => f.path === path);
         if (file && file.deleted) return; // Can't select deleted files
@@ -339,6 +351,7 @@
         if (file && file.html) {
             content.innerHTML = file.html;
             document.title = file.name + ' - LiveMD';
+            updateContentHeader(file);
         }
 
         if (path && path !== previousFile) {
@@ -393,6 +406,7 @@
                         const file = files.find(f => f.path === activeFile);
                         if (file && file.html && !file.deleted) {
                             content.innerHTML = file.html;
+                            updateContentHeader(file);
                         } else if (file && file.deleted) {
                             content.innerHTML = `
                                 <div class="welcome">
@@ -400,6 +414,7 @@
                                     <p>${escapeHtml(file.name)} has been deleted from disk.</p>
                                 </div>
                             `;
+                            updateContentHeader(null);
                         }
                     }
                     break;
@@ -455,6 +470,7 @@
                                 </div>
                             `;
                             document.title = 'LiveMD';
+                            updateContentHeader(null);
                         }
                     }
                     break;

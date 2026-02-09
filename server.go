@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -201,6 +202,7 @@ func (h *Hub) AddFileWithActive(path string, active bool) error {
 	}
 
 	h.broadcastFileList()
+	h.saveState()
 	return nil
 }
 
@@ -377,6 +379,7 @@ func (h *Hub) RemoveFile(path string) error {
 	data, _ := json.Marshal(msg)
 	h.broadcast <- data
 
+	h.saveState()
 	return nil
 }
 
@@ -400,6 +403,7 @@ func (h *Hub) RemoveDeletedFiles() int {
 	if len(toRemove) > 0 {
 		h.logger.Info(fmt.Sprintf("Removed %d deleted file(s)", len(toRemove)))
 		h.broadcastFileList()
+		h.saveState()
 	}
 	return len(toRemove)
 }
@@ -568,9 +572,71 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(info)
 }
 
+// State file persistence for watch list
+
+func getStateFilePath() string {
+	if runtime.GOOS == "windows" {
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = os.Getenv("USERPROFILE")
+		}
+		return filepath.Join(appData, "livemd.state")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".livemd.state")
+}
+
+type stateFile struct {
+	Files []string `json:"files"`
+}
+
+func (h *Hub) saveState() {
+	h.mu.RLock()
+	paths := make([]string, 0, len(h.files))
+	for p := range h.files {
+		paths = append(paths, p)
+	}
+	h.mu.RUnlock()
+
+	state := stateFile{Files: paths}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return
+	}
+	os.WriteFile(getStateFilePath(), data, 0644)
+}
+
+func (h *Hub) loadState() {
+	data, err := os.ReadFile(getStateFilePath())
+	if err != nil {
+		return
+	}
+
+	var state stateFile
+	if err := json.Unmarshal(data, &state); err != nil {
+		return
+	}
+
+	for _, path := range state.Files {
+		if _, err := os.Stat(path); err != nil {
+			continue // skip files that no longer exist
+		}
+		if err := h.AddFile(path); err != nil {
+			log.Printf("State restore: skipping %s: %v", filepath.Base(path), err)
+		}
+	}
+
+	if len(state.Files) > 0 {
+		h.logger.Info(fmt.Sprintf("Restored %d file(s) from previous session", len(h.files)))
+	}
+}
+
 func StartServer(port int) {
 	hub := NewHub()
 	go hub.Run()
+
+	// Restore previously watched files
+	hub.loadState()
 
 	s := &Server{
 		hub:  hub,
