@@ -127,8 +127,11 @@ body {
 }
 
 .folder-icon {
-    font-size: 12px;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    width: 16px;
+    height: 16px;
 }
 
 .folder-name {

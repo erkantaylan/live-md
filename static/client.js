@@ -248,11 +248,14 @@
             const folder = node.children[folderName];
             const isCollapsed = collapsedFolders.has(folder.path);
             const chevron = isCollapsed ? '&#9654;' : '&#9660;';
+            const folderSvg = isCollapsed
+                ? '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M1.5 2h4l1 1h8a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5z" fill="#c09553"/></svg>'
+                : '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M1.5 2h4l1 1h8a.5.5 0 0 1 .5.5V5H1V2.5a.5.5 0 0 1 .5-.5z" fill="#c09553"/><path d="M.5 5.5h14.5l-2 9H2z" fill="#dcb67a"/></svg>';
 
             html += `
                 <div class="tree-folder ${isCollapsed ? 'collapsed' : ''}" data-path="${escapeHtml(folder.path)}" style="padding-left: ${indent}px">
                     <span class="folder-toggle" data-path="${escapeHtml(folder.path)}">${chevron}</span>
-                    <span class="folder-icon">&#9662;</span>
+                    <span class="folder-icon">${folderSvg}</span>
                     <span class="folder-name">${escapeHtml(folderName)}</span>
                 </div>
             `;
