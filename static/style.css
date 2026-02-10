@@ -160,15 +160,12 @@ body {
     font-size: 12px;
     line-height: 20px;
     text-align: center;
-    opacity: 0;
+    opacity: 0.6;
     transition: background 0.15s, opacity 0.15s;
 }
 
-.tree-folder:hover .folder-remove {
-    opacity: 1;
-}
-
 .folder-remove:hover {
+    opacity: 1;
     background: rgba(200, 60, 60, 0.2);
     transform: scale(1.1);
 }
@@ -266,15 +263,12 @@ body {
     font-size: 13px;
     line-height: 22px;
     text-align: center;
-    opacity: 0;
+    opacity: 0.6;
     transition: background 0.15s, opacity 0.15s;
 }
 
-.file-item:hover .file-remove {
-    opacity: 1;
-}
-
 .file-remove:hover {
+    opacity: 1;
     background: rgba(200, 60, 60, 0.2);
     transform: scale(1.1);
 }
