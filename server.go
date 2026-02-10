@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -383,6 +384,32 @@ func (h *Hub) RemoveFile(path string) error {
 	return nil
 }
 
+func (h *Hub) RemoveFolder(folderPath string) int {
+	h.mu.Lock()
+	var toRemove []string
+	prefix := folderPath + "/"
+	for path := range h.files {
+		if strings.HasPrefix(path, prefix) {
+			toRemove = append(toRemove, path)
+		}
+	}
+	for _, path := range toRemove {
+		if w, exists := h.watchers[path]; exists {
+			w.Close()
+			delete(h.watchers, path)
+		}
+		delete(h.files, path)
+	}
+	h.mu.Unlock()
+
+	if len(toRemove) > 0 {
+		h.logger.Info(fmt.Sprintf("Removed %d file(s) from folder: %s", len(toRemove), filepath.Base(folderPath)))
+		h.broadcastFileList()
+		h.saveState()
+	}
+	return len(toRemove)
+}
+
 func (h *Hub) RemoveDeletedFiles() int {
 	h.mu.Lock()
 	var toRemove []string
@@ -688,6 +715,20 @@ func StartServer(port int) {
 			return
 		}
 		s.handleDeactivateFile(w, r)
+	})
+	mux.HandleFunc("/api/files/remove-folder", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			http.Error(w, "Missing path parameter", http.StatusBadRequest)
+			return
+		}
+		count := s.hub.RemoveFolder(path)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"removed": count})
 	})
 	mux.HandleFunc("/api/files/remove-deleted", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

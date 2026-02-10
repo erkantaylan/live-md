@@ -113,6 +113,7 @@ body {
     gap: 5px;
     transition: background 0.15s;
     user-select: none;
+    position: relative;
 }
 
 .tree-folder:hover {
@@ -137,6 +138,35 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+
+.folder-remove {
+    position: absolute;
+    top: 2px;
+    right: 8px;
+    width: 20px;
+    height: 20px;
+    border: none;
+    background: transparent;
+    color: #c44;
+    cursor: pointer;
+    border-radius: 3px;
+    font-size: 12px;
+    line-height: 20px;
+    text-align: center;
+    opacity: 0;
+    transition: background 0.15s, opacity 0.15s;
+}
+
+.tree-folder:hover .folder-remove {
+    opacity: 1;
+}
+
+.folder-remove:hover {
+    background: rgba(200, 60, 60, 0.2);
+    transform: scale(1.1);
 }
 
 /* File item */
