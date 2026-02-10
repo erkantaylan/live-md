@@ -254,6 +254,7 @@
                     <span class="folder-toggle" data-path="${escapeHtml(folder.path)}">${chevron}</span>
                     <span class="folder-icon">&#9662;</span>
                     <span class="folder-name">${escapeHtml(folderName)}</span>
+                    <button class="folder-remove" data-path="${escapeHtml(folder.path)}" title="Remove folder from watch">&#10005;</button>
                 </div>
             `;
 
@@ -357,6 +358,13 @@
             });
         });
 
+        fileList.querySelectorAll('.folder-remove').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                removeFolder(btn.dataset.path);
+            });
+        });
+
         fileList.querySelectorAll('.tree-folder').forEach(el => {
             el.addEventListener('click', () => {
                 toggleFolder(el.dataset.path);
@@ -369,6 +377,14 @@
             method: 'DELETE'
         }).catch(err => {
             console.error('Failed to remove file:', err);
+        });
+    }
+
+    function removeFolder(path) {
+        fetch('/api/files/remove-folder?path=' + encodeURIComponent(path), {
+            method: 'POST'
+        }).catch(err => {
+            console.error('Failed to remove folder:', err);
         });
     }
 
