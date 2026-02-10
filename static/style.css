@@ -106,7 +106,7 @@ body {
 }
 
 .tree-folder {
-    padding: 1px 12px;
+    padding: 2px 12px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -175,7 +175,7 @@ body {
 
 /* File item */
 .file-item {
-    padding: 1px 12px;
+    padding: 2px 12px;
     cursor: pointer;
     border-left: 2px solid transparent;
     transition: background 0.15s;
@@ -198,15 +198,15 @@ body {
 }
 
 .tree-file .file-icon {
-    font-size: 17px;
+    font-size: 14px;
     flex-shrink: 0;
-    width: 19px;
+    width: 16px;
     text-align: center;
     line-height: 1;
 }
 
 .tree-file .file-icon i {
-    font-size: 17px;
+    font-size: 14px;
 }
 
 .file-icon-default {
