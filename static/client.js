@@ -1,5 +1,72 @@
 // WebSocket client for LiveMD
 (function() {
+    // --- Lazy enhancements: mermaid diagrams + KaTeX math ---
+    // Both libraries are loaded from CDN only when their patterns are detected,
+    // so the typical markdown-only use case stays free of extra weight.
+    let mermaidPromise = null;
+    function loadMermaid() {
+        if (mermaidPromise) return mermaidPromise;
+        mermaidPromise = new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
+            s.onload = () => {
+                window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+                resolve(window.mermaid);
+            };
+            s.onerror = reject;
+            document.head.appendChild(s);
+        });
+        return mermaidPromise;
+    }
+
+    let katexPromise = null;
+    function loadKatex() {
+        if (katexPromise) return katexPromise;
+        katexPromise = new Promise((resolve, reject) => {
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css';
+            document.head.appendChild(link);
+            const s1 = document.createElement('script');
+            s1.src = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js';
+            s1.onload = () => {
+                const s2 = document.createElement('script');
+                s2.src = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js';
+                s2.onload = () => resolve(window.renderMathInElement);
+                s2.onerror = reject;
+                document.head.appendChild(s2);
+            };
+            s1.onerror = reject;
+            document.head.appendChild(s1);
+        });
+        return katexPromise;
+    }
+
+    function enhanceContent(root) {
+        if (!root) return;
+        // Mermaid: server emits <div class="mermaid">...</div>; reset processed
+        // attributes so re-renders work after live updates.
+        const mermaidNodes = root.querySelectorAll('.mermaid');
+        if (mermaidNodes.length) {
+            mermaidNodes.forEach(n => n.removeAttribute('data-processed'));
+            loadMermaid().then(m => m.run({ nodes: mermaidNodes })).catch(() => {});
+        }
+        // Math: only load KaTeX if a $ appears in the content (cheap heuristic).
+        if (root.textContent && root.textContent.indexOf('$') !== -1) {
+            loadKatex().then(render => {
+                render(root, {
+                    delimiters: [
+                        { left: '$$', right: '$$', display: true },
+                        { left: '$',  right: '$',  display: false },
+                        { left: '\\[', right: '\\]', display: true },
+                        { left: '\\(', right: '\\)', display: false },
+                    ],
+                    throwOnError: false,
+                });
+            }).catch(() => {});
+        }
+    }
+
     const fileList = document.getElementById('file-list');
     const logList = document.getElementById('log-list');
     const changelogList = document.getElementById('changelog-list');
@@ -439,6 +506,7 @@
 
         if (file && file.html) {
             content.innerHTML = file.html;
+            enhanceContent(content);
             document.title = file.name + ' - LiveMD';
             updateContentHeader(file);
         }
@@ -495,6 +563,7 @@
                         const file = files.find(f => f.path === activeFile);
                         if (file && file.html && !file.deleted) {
                             content.innerHTML = file.html;
+                            enhanceContent(content);
                             updateContentHeader(file);
                         } else if (file && file.deleted) {
                             content.innerHTML = `
@@ -536,6 +605,7 @@
                         if (data.file.path === activeFile) {
                             const scrollY = window.scrollY;
                             content.innerHTML = data.file.html;
+                            enhanceContent(content);
                             window.scrollTo(0, scrollY);
                         }
                     }

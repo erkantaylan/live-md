@@ -508,6 +508,40 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// handleRaw serves the raw bytes of a watched file. The query parameter `path`
+// must match (case-insensitively on Windows) a path in Hub.files; any other
+// path is treated as not-found, blocking arbitrary disk access.
+func (s *Server) handleRaw(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	requested := r.URL.Query().Get("path")
+	if requested == "" {
+		http.Error(w, "Missing path", http.StatusBadRequest)
+		return
+	}
+
+	// Allowlist lookup: only serve files that are registered in the watch list.
+	s.hub.mu.RLock()
+	var actual string
+	for k := range s.hub.files {
+		if PathsEqual(k, requested) {
+			actual = k
+			break
+		}
+	}
+	s.hub.mu.RUnlock()
+	if actual == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	// http.ServeFile handles range requests (important for video seeking) and
+	// sets Content-Type from the extension.
+	http.ServeFile(w, r, actual)
+}
+
 func (s *Server) handleAddFile(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path   string `json:"path"`
@@ -691,6 +725,10 @@ func StartServer(port int) {
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
 	// API endpoints
+	// Raw file content for non-text viewers (images, PDFs, audio, video).
+	// Allowlisted to paths in the watch list — rejects everything else.
+	mux.HandleFunc("/raw", s.handleRaw)
+
 	mux.HandleFunc("/api/watch", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:

@@ -2,6 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/csv"
+	"fmt"
+	"html/template"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,9 +18,12 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
+	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer"
 	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
+	"github.com/yuin/goldmark/util"
 )
 
 const maxLines = 1000
@@ -40,30 +48,75 @@ func NewRenderer() *Renderer {
 		goldmark.WithRendererOptions(
 			goldmarkhtml.WithHardWraps(),
 			goldmarkhtml.WithUnsafe(),
+			renderer.WithNodeRenderers(
+				// Priority lower than goldmark-highlighting (which uses 100) so we
+				// intercept "mermaid" fences before they hit chroma.
+				util.Prioritized(&mermaidRenderer{}, 99),
+			),
 		),
 	)
 
 	return &Renderer{md: md}
 }
 
-func (r *Renderer) Render(filepath string) (string, error) {
-	content, err := os.ReadFile(filepath)
+// mermaidRenderer turns ```mermaid``` fenced code blocks into divs that
+// client-side mermaid.js can pick up. Other languages fall through to the
+// default highlighting renderer.
+type mermaidRenderer struct{}
+
+func (r *mermaidRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	reg.Register(ast.KindFencedCodeBlock, r.render)
+}
+
+func (r *mermaidRenderer) render(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*ast.FencedCodeBlock)
+	if string(n.Language(source)) != "mermaid" {
+		return ast.WalkContinue, nil
+	}
+	if !entering {
+		return ast.WalkContinue, nil
+	}
+	w.WriteString(`<div class="mermaid">`)
+	for i := 0; i < n.Lines().Len(); i++ {
+		line := n.Lines().At(i)
+		w.Write(util.EscapeHTML(line.Value(source)))
+	}
+	w.WriteString(`</div>`)
+	return ast.WalkSkipChildren, nil
+}
+
+func (r *Renderer) Render(path string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(path))
+
+	// Media: rendered as <img>/<embed>/<audio>/<video> referencing /raw.
+	// Don't read content into memory — the browser fetches via /raw.
+	if html, ok := renderMedia(path, ext); ok {
+		return html, nil
+	}
+
+	// Tabular: read and render as HTML table.
+	if ext == ".csv" || ext == ".tsv" {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return renderTable(content, ext == ".tsv"), nil
+	}
+
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
 
-	// Check if binary
 	if isBinary(content) {
-		return renderBinaryMessage(filepath), nil
+		return renderBinaryMessage(path), nil
 	}
 
-	// Check if markdown
-	if isMarkdown(filepath) {
+	if isMarkdown(path) {
 		return r.renderMarkdown(content)
 	}
 
-	// Render as code with syntax highlighting
-	return r.renderCode(filepath, content)
+	return r.renderCode(path, content)
 }
 
 func (r *Renderer) renderMarkdown(content []byte) (string, error) {
@@ -139,6 +192,101 @@ func renderPlainText(code string, truncated bool) string {
 	}
 
 	return result
+}
+
+// renderMedia returns embed HTML for image/PDF/audio/video files. The browser
+// fetches the bytes from /raw — the daemon never reads them into memory.
+// Returns ok=false for non-media extensions.
+func renderMedia(path, ext string) (string, bool) {
+	rawURL := "/raw?path=" + url.QueryEscape(path)
+	name := template.HTMLEscapeString(filepath.Base(path))
+
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".avif", ".svg":
+		return fmt.Sprintf(
+			`<div style="text-align:center;padding:16px;"><img src="%s" alt="%s" style="max-width:100%%;height:auto;border-radius:4px;"></div>`,
+			rawURL, name,
+		), true
+	case ".pdf":
+		return fmt.Sprintf(
+			`<embed src="%s" type="application/pdf" style="width:100%%;height:calc(100vh - 120px);border:none;">`,
+			rawURL,
+		), true
+	case ".mp3", ".wav", ".ogg", ".oga", ".m4a", ".flac", ".aac", ".opus":
+		return fmt.Sprintf(
+			`<div style="padding:24px;"><div style="margin-bottom:12px;color:#444;font-weight:500;">%s</div><audio controls preload="metadata" style="width:100%%;"><source src="%s"></audio></div>`,
+			name, rawURL,
+		), true
+	case ".mp4", ".webm", ".mov", ".mkv", ".m4v":
+		return fmt.Sprintf(
+			`<div style="padding:16px;text-align:center;"><video controls preload="metadata" style="max-width:100%%;max-height:calc(100vh - 160px);border-radius:4px;"><source src="%s"></video></div>`,
+			rawURL,
+		), true
+	}
+	return "", false
+}
+
+// renderTable parses CSV (or TSV) content and emits a styled HTML table.
+// Truncates at maxTableRows so a 1M-row file doesn't lock up the browser.
+func renderTable(content []byte, tsv bool) string {
+	const maxTableRows = 5000
+
+	reader := csv.NewReader(bytes.NewReader(content))
+	if tsv {
+		reader.Comma = '\t'
+	}
+	reader.FieldsPerRecord = -1 // tolerate ragged rows
+	reader.LazyQuotes = true
+
+	var rows [][]string
+	truncated := false
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// Stop on the first parse error rather than silently producing
+			// half a table — fall back to the chroma view.
+			return renderPlainText(string(content), false)
+		}
+		rows = append(rows, row)
+		if len(rows) >= maxTableRows {
+			truncated = true
+			break
+		}
+	}
+	if len(rows) == 0 {
+		return `<p style="padding:24px;color:#666;">Empty file.</p>`
+	}
+
+	var b strings.Builder
+	b.WriteString(`<div style="overflow:auto;max-height:calc(100vh - 120px);"><table style="border-collapse:collapse;font-family:monospace;font-size:13px;">`)
+	for i, row := range rows {
+		tag := "td"
+		bg := ""
+		if i == 0 {
+			tag = "th"
+			bg = "background:#f6f8fa;position:sticky;top:0;"
+		}
+		b.WriteString("<tr>")
+		for _, cell := range row {
+			fmt.Fprintf(&b,
+				`<%s style="border:1px solid #d0d7de;padding:6px 10px;text-align:left;%s">%s</%s>`,
+				tag, bg, template.HTMLEscapeString(cell), tag,
+			)
+		}
+		b.WriteString("</tr>")
+	}
+	b.WriteString(`</table></div>`)
+
+	if truncated {
+		fmt.Fprintf(&b,
+			`<div style="padding:12px;background:#fff3cd;color:#856404;border-radius:4px;margin-top:16px;">Showing first %d rows.</div>`,
+			maxTableRows,
+		)
+	}
+	return b.String()
 }
 
 func renderBinaryMessage(path string) string {
