@@ -26,21 +26,49 @@ $ livemd add docs/guide.md        →   Two files in sidebar
 
 ## Install
 
-```bash
-# Clone and build
-git clone https://github.com/erkantaylan/live-md.git
-cd live-md
-make build
+The installers are **idempotent** — re-running them updates an existing install in place. Once livemd is on your machine you can also self-update with `livemd install`.
 
-# Optional: install globally
-make install
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/erkantaylan/livemd/master/install.sh | sudo bash
 ```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/erkantaylan/livemd/master/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\livemd\` and adds it to your user `PATH`. No admin required.
+
+### From source
+
+```bash
+git clone https://github.com/erkantaylan/livemd.git
+cd livemd
+make install              # build, install, start daemon
+make install PORT=3001    # same, but on port 3001
+```
+
+`make install` works as both first-time install and update — it stops any running daemon, replaces the binary, and starts the new one.
+
+### Custom port
+
+- Make: `make install PORT=3001`
+- Curl/iex: `LIVEMD_PORT=3001 curl ... | sudo bash` or `$env:LIVEMD_PORT=3001; irm ... | iex`
+- Or set persistently any time: `livemd port 3001`
 
 ## Usage
 
+The installer above already starts the server in the background. Otherwise:
+
 ```bash
-# Start the server
+# Start the server (foreground — Ctrl+C to stop)
 livemd start
+
+# Or as a background daemon
+livemd start --detach
 
 # Add files to watch
 livemd add README.md
@@ -66,19 +94,15 @@ Open http://localhost:3000 in your browser.
 
 ```
 make              Show help
-make build        Build the binary
-make clean        Remove binary
+make build        Build the binary in the current directory
+make clean        Remove the local build
 
-make install      Install to /usr/local/bin (sudo)
-make install-user Install to ~/.local/bin (no sudo)
-make uninstall    Remove from /usr/local/bin
-make uninstall-user Remove from ~/.local/bin
-make update       Pull latest and rebuild
+make install      Build, install, and start daemon (idempotent — also updates)
+make install PORT=3001    Same, but on a specific port
+make uninstall    Stop daemon and remove binary
 
-make start        Start the server (foreground)
-make stop         Stop the server
-make daemon       Start as background daemon
-make daemon-stop  Stop background daemon
+make start        Start the daemon (assumes already installed)
+make stop         Stop the daemon
 
 make watch f1 f2      Add files to watch
 make watch-dir ./dir  Add folder recursively

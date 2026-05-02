@@ -40,6 +40,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // defaultExtensions defines the file types watched when recursively adding directories.
@@ -69,29 +70,30 @@ func main() {
 		fmt.Fprintf(os.Stderr, `LiveMD - Live markdown viewer (%s)
 
 Usage:
-  livemd start [--port PORT]    Start the server
-  livemd add <file.md>          Add file to watch
-  livemd add <folder> -r        Add folder recursively
-  livemd remove <file.md>       Remove file from watch
-  livemd list                   List watched files
-  livemd stop                   Stop the server
-  livemd port                   Show current port
-  livemd port <number>          Set default port
-  livemd version                Print version
-  livemd update                 Update to latest release
+  livemd start [--port N] [--detach]   Start the server (foreground or daemon)
+  livemd add <file.md>                 Add file to watch
+  livemd add <folder> -r               Add folder recursively
+  livemd remove <file.md>              Remove file from watch
+  livemd list                          List watched files
+  livemd stop                          Stop the server
+  livemd port                          Show current port
+  livemd port <number>                 Set default port
+  livemd install                       Self-update from latest GitHub release
+  livemd ensure-path                   Add the install dir to PATH
+  livemd version                       Print version
 
 Options:
-  --port PORT    Port to serve on (default 3000)
+  --port N          Port to serve on (default 3000)
+  --detach          Run as a background daemon
   -r, --recursive   Recursively add files from folder
   --filter EXT      Filter by extensions (comma-separated, e.g. "md,go,js")
 
 Examples:
-  livemd start
+  livemd start --detach
   livemd add README.md
-  livemd add docs/guide.md
   livemd add ./docs -r
   livemd add ./src -r --filter "md,go"
-  livemd list
+  livemd install
 `, Version)
 	}
 
@@ -117,8 +119,13 @@ Examples:
 		cmdPort()
 	case "version", "--version", "-v":
 		fmt.Printf("livemd %s %s/%s\n", Version, runtime.GOOS, runtime.GOARCH)
+	case "install":
+		cmdInstall()
 	case "update":
-		cmdUpdate()
+		// Hidden alias kept for users with old muscle memory.
+		cmdInstall()
+	case "ensure-path":
+		cmdEnsurePath()
 	case "--help", "-h", "help":
 		flag.Usage()
 	default:
@@ -136,13 +143,31 @@ func cmdStart() {
 	defaultPort := readConfigPort()
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	port := fs.Int("port", defaultPort, "port to serve on")
+	detach := fs.Bool("detach", false, "run as background daemon")
 	fs.Parse(os.Args[2:])
 
 	// Check if already running
 	if lockPort, err := readLockFile(); err == nil {
 		fmt.Printf("LiveMD already running on port %d\n", lockPort)
 		printServerAddresses(lockPort)
+		// --detach is idempotent: already-running is success, not error.
+		if *detach {
+			os.Exit(0)
+		}
 		os.Exit(1)
+	}
+
+	// --detach: re-exec self without the flag, redirected to a log file, then exit.
+	if *detach {
+		var childArgs []string
+		for _, a := range os.Args[1:] {
+			if a == "--detach" {
+				continue
+			}
+			childArgs = append(childArgs, a)
+		}
+		daemonize(childArgs)
+		return
 	}
 
 	// Auto-detect available port if the requested one is in use
@@ -545,25 +570,11 @@ func cmdList() {
 }
 
 // cmdStop handles the "livemd stop" command.
-// It sends a POST request to the server's /api/shutdown endpoint to initiate graceful shutdown.
-// The lock file is removed regardless of whether the server responds (it may have already exited).
 func cmdStop() {
-	port, err := readLockFile()
-	if err != nil {
+	if !stopRunningDaemon() {
 		fmt.Fprintln(os.Stderr, "LiveMD server not running.")
 		os.Exit(1)
 	}
-
-	resp, err := http.Post(fmt.Sprintf("http://localhost:%d/api/shutdown", port), "", nil)
-	if err != nil {
-		// Server might have already shut down
-		removeLockFile()
-		fmt.Println("LiveMD server stopped.")
-		return
-	}
-	defer resp.Body.Close()
-
-	removeLockFile()
 	fmt.Println("LiveMD server stopped.")
 }
 
@@ -675,4 +686,62 @@ func readLockFile() (int, error) {
 // Errors are silently ignored as the file may already be absent.
 func removeLockFile() {
 	os.Remove(getLockFilePath())
+}
+
+// getLogFilePath returns the path the daemon redirects stdout/stderr to.
+func getLogFilePath() string {
+	if runtime.GOOS == "windows" {
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = os.Getenv("USERPROFILE")
+		}
+		return filepath.Join(appData, "livemd.log")
+	}
+	return "/tmp/livemd.log"
+}
+
+// daemonize re-execs the current binary detached from the controlling terminal,
+// redirects stdout/stderr to the daemon log, prints the child's PID, and returns.
+// The caller is the parent and should exit after this returns.
+func daemonize(childArgs []string) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot determine executable path: %v\n", err)
+		os.Exit(1)
+	}
+
+	logPath := getLogFilePath()
+	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot open log file %s: %v\n", logPath, err)
+		os.Exit(1)
+	}
+
+	proc, err := os.StartProcess(exe, append([]string{exe}, childArgs...), &os.ProcAttr{
+		Files: []*os.File{nil, logFile, logFile},
+		Sys:   daemonSysProcAttr(),
+	})
+	logFile.Close() // child inherited the fd; parent doesn't need it
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot start daemon: %v\n", err)
+		os.Exit(1)
+	}
+	proc.Release()
+
+	// Wait briefly for the daemon to grab the lock so subsequent CLI calls work.
+	var lockPort int
+	for i := 0; i < 60; i++ {
+		if p, err := readLockFile(); err == nil {
+			lockPort = p
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	fmt.Printf("\n  LiveMD daemon started (PID %d)\n", proc.Pid)
+	if lockPort > 0 {
+		printServerAddresses(lockPort)
+	}
+	fmt.Printf("  Logs: %s\n", logPath)
+	fmt.Println()
 }

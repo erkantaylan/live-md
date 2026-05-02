@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,27 +38,30 @@ type githubAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// cmdUpdate checks GitHub for a newer release and self-updates the binary.
-func cmdUpdate() {
+// cmdInstall fetches the latest release from GitHub, replaces the running
+// binary with it, ensures PATH, and restarts the daemon if it was running.
+// Idempotent: when already at the latest version it still re-runs PATH and
+// daemon checks.
+func cmdInstall() {
 	if Version == "dev" {
-		fmt.Fprintln(os.Stderr, "Cannot update a dev build. Install a release version first.")
+		fmt.Fprintln(os.Stderr, "Cannot self-install a dev build. Use 'make install' from source, or run the install script.")
 		os.Exit(1)
 	}
 
-	fmt.Println("Checking for updates...")
-
+	fmt.Println("Checking GitHub for the latest release...")
 	release, err := fetchLatestRelease()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error checking for updates: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	if !isNewer(Version, release.TagName) {
-		fmt.Printf("Already up to date (%s)\n", Version)
+		fmt.Printf("Already at latest version (%s)\n", Version)
+		cmdEnsurePath()
 		return
 	}
 
-	fmt.Printf("New version available: %s (current: %s)\n", release.TagName, Version)
+	fmt.Printf("Updating %s -> %s\n", Version, release.TagName)
 
 	assetName := fmt.Sprintf("livemd-%s-%s", runtime.GOOS, runtime.GOARCH)
 	if runtime.GOOS == "windows" {
@@ -71,26 +75,86 @@ func cmdUpdate() {
 			break
 		}
 	}
-
 	if downloadURL == "" {
-		fmt.Fprintf(os.Stderr, "No release binary found for %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		fmt.Fprintf(os.Stderr, "No release binary published for %s/%s\n", runtime.GOOS, runtime.GOARCH)
 		os.Exit(1)
 	}
 
 	fmt.Printf("Downloading %s...\n", assetName)
-
 	binary, err := downloadAsset(downloadURL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error downloading update: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error downloading: %v\n", err)
 		os.Exit(1)
+	}
+
+	wasRunning := stopRunningDaemon()
+	if wasRunning {
+		fmt.Println("Stopped running daemon.")
 	}
 
 	if err := replaceBinary(binary); err != nil {
-		fmt.Fprintf(os.Stderr, "Error installing update: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error installing: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Printf("Installed %s\n", release.TagName)
 
-	fmt.Printf("Updated to %s\n", release.TagName)
+	cmdEnsurePath()
+
+	if wasRunning {
+		if err := relaunchDaemon(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not restart daemon: %v\n", err)
+			fmt.Fprintln(os.Stderr, "Run 'livemd start --detach' manually.")
+			return
+		}
+	}
+}
+
+// stopRunningDaemon issues shutdown to the running daemon and waits for the
+// port to actually close so the .exe is unlocked on Windows. Returns true if
+// a lockfile was present at the start (i.e., something looked like a daemon).
+func stopRunningDaemon() bool {
+	port, err := readLockFile()
+	if err != nil {
+		return false
+	}
+	resp, _ := http.Post(fmt.Sprintf("http://localhost:%d/api/shutdown", port), "", nil)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	addr := fmt.Sprintf("localhost:%d", port)
+	for i := 0; i < 60; i++ {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil {
+			break
+		}
+		c.Close()
+		time.Sleep(100 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	removeLockFile()
+	return true
+}
+
+// relaunchDaemon spawns `livemd start --detach` using the (possibly just-replaced) binary at os.Executable().
+func relaunchDaemon() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	proc, err := os.StartProcess(exe, []string{exe, "start", "--detach"}, &os.ProcAttr{
+		Files: []*os.File{nil, os.Stdout, os.Stderr},
+	})
+	if err != nil {
+		return err
+	}
+	state, err := proc.Wait()
+	if err != nil {
+		return err
+	}
+	if !state.Success() {
+		return fmt.Errorf("start --detach exited %d", state.ExitCode())
+	}
+	return nil
 }
 
 func fetchLatestRelease() (*githubRelease, error) {

@@ -7,6 +7,9 @@ REPO="erkantaylan/livemd"
 INSTALL_DIR="/usr/local/bin"
 BINARY="livemd"
 
+# Optional: set LIVEMD_PORT to choose a port (persisted via `livemd port`).
+PORT="${LIVEMD_PORT:-}"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -108,18 +111,32 @@ main() {
     mv "$tmp" "${INSTALL_DIR}/${BINARY}"
     info "Installed to ${INSTALL_DIR}/${BINARY}"
 
-    # Verify
-    local installed_version
-    installed_version="$("${INSTALL_DIR}/${BINARY}" version 2>/dev/null || echo "installed")"
-    info "Installed: ${installed_version}"
+    # Persist port if requested
+    if [[ -n "$PORT" ]]; then
+        if "${INSTALL_DIR}/${BINARY}" port "$PORT" >/dev/null 2>&1; then
+            info "Default port set to ${PORT}"
+        else
+            warn "Failed to set port to ${PORT}; using default."
+        fi
+    fi
+
+    # Confirm PATH (no-op printout on most systems since /usr/local/bin is standard).
+    "${INSTALL_DIR}/${BINARY}" ensure-path || true
+
+    # Start the daemon
+    if "${INSTALL_DIR}/${BINARY}" start --detach; then
+        :
+    else
+        warn "Daemon did not start cleanly; run 'livemd start --detach' manually."
+    fi
 
     echo ""
-    echo -e "${GREEN}${BOLD}LiveMD ${version} installed successfully.${NC}"
+    echo -e "${GREEN}${BOLD}LiveMD ${version} installed.${NC}"
     echo ""
-    echo "  Start server:  livemd start"
     echo "  Watch a file:  livemd add README.md"
-    echo "  Open browser:  http://localhost:3000"
-    echo "  Update later:  livemd update"
+    echo "  List watched:  livemd list"
+    echo "  Stop server:   livemd stop"
+    echo "  Re-install:    re-run this command (idempotent — also updates)"
     echo ""
     if [[ -n "$existing" && "$existing" != "${INSTALL_DIR}/${BINARY}" ]]; then
         warn "Old binary still exists at ${existing} — you may want to remove it."
