@@ -87,8 +87,14 @@
     const maxReconnectDelay = 10000;
 
     let files = [];
+    let folders = []; // followed folders (auto-add new files)
     let logs = [];
     let activeFile = null;
+
+    function findFollowedFolder(path) {
+        // case-insensitive on Windows; assume server already normalized
+        return folders.find(f => f.path.toLowerCase() === path.toLowerCase());
+    }
     let collapsedFolders = new Set();
     let changelogLoaded = false;
 
@@ -319,11 +325,17 @@
                 ? '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M1.5 2h4l1 1h8a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5z" fill="#c09553"/></svg>'
                 : '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M1.5 2h4l1 1h8a.5.5 0 0 1 .5.5V5H1V2.5a.5.5 0 0 1 .5-.5z" fill="#c09553"/><path d="M.5 5.5h14.5l-2 9H2z" fill="#dcb67a"/></svg>';
 
+            const followed = findFollowedFolder(folder.path);
+            const liveBadge = followed
+                ? `<label class="folder-live" title="Auto-add new files dropped into this folder"><input type="checkbox" data-path="${escapeHtml(folder.path)}" class="folder-live-toggle" ${followed.live ? 'checked' : ''}><span>live</span></label>`
+                : '';
+
             html += `
                 <div class="tree-folder ${isCollapsed ? 'collapsed' : ''}" data-path="${escapeHtml(folder.path)}" style="padding-left: ${indent}px">
                     <span class="folder-toggle" data-path="${escapeHtml(folder.path)}">${chevron}</span>
                     <span class="folder-icon">${folderSvg}</span>
                     <span class="folder-name">${escapeHtml(folderName)}</span>
+                    ${liveBadge}
                     <button class="folder-remove" data-path="${escapeHtml(folder.path)}" title="Remove folder from watch">&#10005;</button>
                 </div>
             `;
@@ -435,10 +447,27 @@
             });
         });
 
+        fileList.querySelectorAll('.folder-live-toggle').forEach(cb => {
+            cb.addEventListener('click', e => e.stopPropagation());
+            cb.addEventListener('change', () => {
+                toggleFolderLive(cb.dataset.path, cb.checked);
+            });
+        });
+
         fileList.querySelectorAll('.tree-folder').forEach(el => {
             el.addEventListener('click', () => {
                 toggleFolder(el.dataset.path);
             });
+        });
+    }
+
+    function toggleFolderLive(path, live) {
+        fetch('/api/folders/toggle-live', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path, live: live }),
+        }).catch(err => {
+            console.error('Failed to toggle live:', err);
         });
     }
 
@@ -554,6 +583,7 @@
             switch (data.type) {
                 case 'files':
                     files = data.files || [];
+                    folders = data.folders || [];
                     renderFileList();
 
                     if (!activeFile && files.length > 0) {

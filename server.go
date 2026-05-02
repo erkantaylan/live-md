@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,12 +35,13 @@ type WatchedFile struct {
 
 // Message sent to clients via WebSocket
 type Message struct {
-	Type  string        `json:"type"`
-	Files []WatchedFile `json:"files,omitempty"`
-	File  *WatchedFile  `json:"file,omitempty"`
-	Path  string        `json:"path,omitempty"`
-	Log   *LogEntry     `json:"log,omitempty"`
-	Logs  []LogEntry    `json:"logs,omitempty"`
+	Type    string          `json:"type"`
+	Files   []WatchedFile   `json:"files,omitempty"`
+	Folders []WatchedFolder `json:"folders,omitempty"`
+	File    *WatchedFile    `json:"file,omitempty"`
+	Path    string          `json:"path,omitempty"`
+	Log     *LogEntry       `json:"log,omitempty"`
+	Logs    []LogEntry      `json:"logs,omitempty"`
 }
 
 // Client represents a connected WebSocket client
@@ -58,11 +58,13 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 
-	mu       sync.RWMutex
-	files    map[string]*WatchedFile
-	watchers map[string]*Watcher
-	renderer *Renderer
-	logger   *Logger
+	mu        sync.RWMutex
+	files     map[string]*WatchedFile
+	watchers  map[string]*Watcher
+	folders   map[string]*WatchedFolder
+	folderMgr *FolderManager
+	renderer  *Renderer
+	logger    *Logger
 }
 
 func NewHub() *Hub {
@@ -73,11 +75,82 @@ func NewHub() *Hub {
 		unregister: make(chan *Client),
 		files:      make(map[string]*WatchedFile),
 		watchers:   make(map[string]*Watcher),
+		folders:    make(map[string]*WatchedFolder),
 		renderer:   NewRenderer(),
 		logger:     NewLogger(100),
 	}
 	h.logger.SetHub(h)
+
+	fm, err := NewFolderManager(h)
+	if err != nil {
+		h.logger.Warn(fmt.Sprintf("Could not create folder watcher: %v", err))
+	} else {
+		h.folderMgr = fm
+	}
+
+	h.restoreFromState()
 	return h
+}
+
+// persistState writes the current files+folders to disk so they survive restart.
+// Called from any add/remove/toggle path; safe to call from inside a Hub method
+// that is NOT already holding h.mu (it acquires its own RLock).
+func (h *Hub) persistState() {
+	h.mu.RLock()
+	files := make([]StateFile, 0, len(h.files))
+	for _, f := range h.files {
+		files = append(files, StateFile{Path: f.Path, Active: false}) // active is session-scoped
+	}
+	folders := make([]WatchedFolder, 0, len(h.folders))
+	for _, f := range h.folders {
+		folders = append(folders, *f)
+	}
+	h.mu.RUnlock()
+
+	if err := saveState(&State{Files: files, Folders: folders}); err != nil {
+		h.logger.Warn(fmt.Sprintf("Persist state: %v", err))
+	}
+}
+
+// restoreFromState loads the saved state file, registering files and following
+// folders. Missing files are silently skipped (file may have been deleted while
+// the daemon was down).
+func (h *Hub) restoreFromState() {
+	state, err := loadState()
+	if err != nil {
+		h.logger.Warn(fmt.Sprintf("Load state: %v", err))
+		return
+	}
+
+	for _, sf := range state.Files {
+		if _, err := os.Stat(sf.Path); err != nil {
+			continue // file gone, skip silently
+		}
+		if err := h.AddFile(sf.Path); err != nil {
+			h.logger.Warn(fmt.Sprintf("Restore file %s: %v", sf.Path, err))
+		}
+	}
+
+	if h.folderMgr == nil {
+		return
+	}
+	for i := range state.Folders {
+		folder := state.Folders[i] // copy
+		if _, err := os.Stat(folder.Path); err != nil {
+			continue
+		}
+		files, err := h.folderMgr.Follow(&folder)
+		if err != nil {
+			h.logger.Warn(fmt.Sprintf("Restore folder %s: %v", folder.Path, err))
+			continue
+		}
+		h.mu.Lock()
+		h.folders[folder.Path] = &folder
+		h.mu.Unlock()
+		for _, f := range files {
+			h.AddFile(f) // ignore already-registered errors
+		}
+	}
 }
 
 func (h *Hub) Run() {
@@ -109,19 +182,27 @@ func (h *Hub) Run() {
 	}
 }
 
-func (h *Hub) sendFileList(client *Client) {
+// snapshotFilesFolders captures the current file + folder lists under the lock.
+func (h *Hub) snapshotFilesFolders() ([]WatchedFile, []WatchedFolder) {
 	h.mu.RLock()
+	defer h.mu.RUnlock()
 	files := make([]WatchedFile, 0, len(h.files))
 	for _, f := range h.files {
 		files = append(files, *f)
 	}
-	h.mu.RUnlock()
+	folders := make([]WatchedFolder, 0, len(h.folders))
+	for _, f := range h.folders {
+		folders = append(folders, *f)
+	}
+	return files, folders
+}
 
-	msg := Message{Type: "files", Files: files}
+func (h *Hub) sendFileList(client *Client) {
+	files, folders := h.snapshotFilesFolders()
+	msg := Message{Type: "files", Files: files, Folders: folders}
 	data, _ := json.Marshal(msg)
 	client.send <- data
 
-	// Also send logs
 	logs := h.logger.GetEntries()
 	logsMsg := Message{Type: "logs", Logs: logs}
 	logsData, _ := json.Marshal(logsMsg)
@@ -129,14 +210,8 @@ func (h *Hub) sendFileList(client *Client) {
 }
 
 func (h *Hub) broadcastFileList() {
-	h.mu.RLock()
-	files := make([]WatchedFile, 0, len(h.files))
-	for _, f := range h.files {
-		files = append(files, *f)
-	}
-	h.mu.RUnlock()
-
-	msg := Message{Type: "files", Files: files}
+	files, folders := h.snapshotFilesFolders()
+	msg := Message{Type: "files", Files: files, Folders: folders}
 	data, _ := json.Marshal(msg)
 	h.broadcast <- data
 }
@@ -151,6 +226,96 @@ func (h *Hub) broadcastLog(entry LogEntry) {
 	msg := Message{Type: "log", Log: &entry}
 	data, _ := json.Marshal(msg)
 	h.broadcast <- data
+}
+
+// FollowFolder registers a folder, runs initial discovery, and starts watching
+// it for new files. Live defaults to true (the user opted into "follow"; checkbox
+// can flip it later). Idempotent: re-following an existing folder returns nil.
+func (h *Hub) FollowFolder(folder *WatchedFolder) error {
+	if h.folderMgr == nil {
+		return fmt.Errorf("folder watcher unavailable")
+	}
+
+	h.mu.Lock()
+	for existing := range h.folders {
+		if PathsEqual(existing, folder.Path) {
+			h.mu.Unlock()
+			return nil
+		}
+	}
+	h.folders[folder.Path] = folder
+	h.mu.Unlock()
+
+	files, err := h.folderMgr.Follow(folder)
+	if err != nil {
+		h.mu.Lock()
+		delete(h.folders, folder.Path)
+		h.mu.Unlock()
+		return err
+	}
+
+	for _, f := range files {
+		_ = h.AddFile(f) // ignore "already registered"
+	}
+
+	h.logger.Info(fmt.Sprintf("Following folder: %s (%d files)", folder.Path, len(files)))
+	h.broadcastFileList()
+	h.persistState()
+	return nil
+}
+
+// UnfollowFolder stops auto-adding new files for a folder. Existing watched
+// files stay registered (use RemoveFolder to also drop them).
+func (h *Hub) UnfollowFolder(path string) error {
+	h.mu.Lock()
+	var actual string
+	for existing := range h.folders {
+		if PathsEqual(existing, path) {
+			actual = existing
+			break
+		}
+	}
+	if actual == "" {
+		h.mu.Unlock()
+		return fmt.Errorf("folder not followed: %s", path)
+	}
+	delete(h.folders, actual)
+	h.mu.Unlock()
+
+	if h.folderMgr != nil {
+		h.folderMgr.Unfollow(actual)
+	}
+	h.logger.Info(fmt.Sprintf("Unfollowed folder: %s", actual))
+	h.broadcastFileList()
+	h.persistState()
+	return nil
+}
+
+// SetFolderLive toggles whether new files in the folder are auto-added.
+func (h *Hub) SetFolderLive(path string, live bool) error {
+	h.mu.Lock()
+	var actual string
+	var folder *WatchedFolder
+	for existing, f := range h.folders {
+		if PathsEqual(existing, path) {
+			actual = existing
+			folder = f
+			break
+		}
+	}
+	if folder == nil {
+		h.mu.Unlock()
+		return fmt.Errorf("folder not followed: %s", path)
+	}
+	folder.Live = live
+	h.mu.Unlock()
+
+	if h.folderMgr != nil {
+		h.folderMgr.SetLive(actual, live)
+	}
+	h.broadcastFileList()
+	h.persistState()
+	return nil
 }
 
 func (h *Hub) AddFile(path string) error {
@@ -203,7 +368,7 @@ func (h *Hub) AddFileWithActive(path string, active bool) error {
 	}
 
 	h.broadcastFileList()
-	h.saveState()
+	h.persistState()
 	return nil
 }
 
@@ -380,7 +545,7 @@ func (h *Hub) RemoveFile(path string) error {
 	data, _ := json.Marshal(msg)
 	h.broadcast <- data
 
-	h.saveState()
+	h.persistState()
 	return nil
 }
 
@@ -400,12 +565,27 @@ func (h *Hub) RemoveFolder(folderPath string) int {
 		}
 		delete(h.files, path)
 	}
+	// If this matches a followed folder root, also unfollow so we stop auto-adding.
+	var unfollow string
+	for existing := range h.folders {
+		if PathsEqual(existing, folderPath) {
+			unfollow = existing
+			break
+		}
+	}
+	if unfollow != "" {
+		delete(h.folders, unfollow)
+	}
 	h.mu.Unlock()
+
+	if unfollow != "" && h.folderMgr != nil {
+		h.folderMgr.Unfollow(unfollow)
+	}
 
 	if len(toRemove) > 0 {
 		h.logger.Info(fmt.Sprintf("Removed %d file(s) from folder: %s", len(toRemove), filepath.Base(folderPath)))
 		h.broadcastFileList()
-		h.saveState()
+		h.persistState()
 	}
 	return len(toRemove)
 }
@@ -430,7 +610,7 @@ func (h *Hub) RemoveDeletedFiles() int {
 	if len(toRemove) > 0 {
 		h.logger.Info(fmt.Sprintf("Removed %d deleted file(s)", len(toRemove)))
 		h.broadcastFileList()
-		h.saveState()
+		h.persistState()
 	}
 	return len(toRemove)
 }
@@ -633,71 +813,12 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(info)
 }
 
-// State file persistence for watch list
-
-func getStateFilePath() string {
-	if runtime.GOOS == "windows" {
-		appData := os.Getenv("APPDATA")
-		if appData == "" {
-			appData = os.Getenv("USERPROFILE")
-		}
-		return filepath.Join(appData, "livemd.state")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".livemd.state")
-}
-
-type stateFile struct {
-	Files []string `json:"files"`
-}
-
-func (h *Hub) saveState() {
-	h.mu.RLock()
-	paths := make([]string, 0, len(h.files))
-	for p := range h.files {
-		paths = append(paths, p)
-	}
-	h.mu.RUnlock()
-
-	state := stateFile{Files: paths}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return
-	}
-	os.WriteFile(getStateFilePath(), data, 0644)
-}
-
-func (h *Hub) loadState() {
-	data, err := os.ReadFile(getStateFilePath())
-	if err != nil {
-		return
-	}
-
-	var state stateFile
-	if err := json.Unmarshal(data, &state); err != nil {
-		return
-	}
-
-	for _, path := range state.Files {
-		if _, err := os.Stat(path); err != nil {
-			continue // skip files that no longer exist
-		}
-		if err := h.AddFile(path); err != nil {
-			log.Printf("State restore: skipping %s: %v", filepath.Base(path), err)
-		}
-	}
-
-	if len(state.Files) > 0 {
-		h.logger.Info(fmt.Sprintf("Restored %d file(s) from previous session", len(h.files)))
-	}
-}
-
 func StartServer(port int) {
 	hub := NewHub()
 	go hub.Run()
 
 	// Restore previously watched files
-	hub.loadState()
+	
 
 	s := &Server{
 		hub:  hub,
@@ -753,6 +874,56 @@ func StartServer(port int) {
 			return
 		}
 		s.handleDeactivateFile(w, r)
+	})
+	// Followed-folder management. POST follows, DELETE unfollows, /toggle-live
+	// flips the auto-add bit.
+	mux.HandleFunc("/api/folders", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			var req WatchedFolder
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "Invalid request", http.StatusBadRequest)
+				return
+			}
+			req.Live = true
+			if err := s.hub.FollowFolder(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case http.MethodDelete:
+			path := r.URL.Query().Get("path")
+			if path == "" {
+				http.Error(w, "Missing path", http.StatusBadRequest)
+				return
+			}
+			if err := s.hub.UnfollowFolder(path); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/folders/toggle-live", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Path string `json:"path"`
+			Live bool   `json:"live"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		if err := s.hub.SetFolderLive(req.Path, req.Live); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/api/files/remove-folder", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

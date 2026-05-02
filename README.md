@@ -74,9 +74,10 @@ livemd start --detach
 livemd add README.md
 livemd add docs/guide.md
 
-# Add entire folder recursively
+# Follow a folder (auto-adds new files as they appear)
 livemd add ./docs -r
 livemd add ./src -r --filter "md,go,js"
+livemd add ./misc -r --depth 5         # cap depth in non-git folders
 
 # List watched files
 livemd list
@@ -112,15 +113,14 @@ make list             List watched files
 
 ## Features
 
-- **Persistent server** - Start once, add files anytime
-- **Tree view sidebar** - Collapsible folder structure like a solution explorer
-- **Lazy watching** - Files are registered but only actively watched when selected (saves system resources)
-- **Recursive folder watching** - Add entire directories with `livemd add ./folder -r`
+- **Persistent server** - Start once, add files anytime; state survives restart
+- **Followed folders** - `livemd add ./dir -r` keeps watching for new files; gitignored files are skipped automatically when the folder is in a git repo
+- **Tree view sidebar** - Collapsible folder structure with a Live toggle on followed folders
+- **Lazy watching** - Files are registered but only actively watched when selected
+- **Many viewers** - Markdown (GFM + mermaid + KaTeX math), 50+ syntax-highlighted code languages, images, PDFs, audio, video, CSV/TSV as tables
 - **WebSocket live updates** - No page refresh needed
-- **GitHub-flavored markdown** - Tables, task lists, autolinks
-- **Syntax highlighting** - Code blocks in markdown and standalone code files (50+ languages)
-- **Network access** - Shows all network interface IPs on startup for easy access from other devices
-- **Cross-platform** - Works on Linux, macOS, Windows
+- **Self-update** - `livemd install` pulls the latest GitHub release in place
+- **Cross-platform** - Linux, macOS, Windows (background daemon on all three)
 
 ## Tech Stack
 

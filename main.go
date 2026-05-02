@@ -291,6 +291,7 @@ func cmdAdd() {
 	recursive := fs.Bool("r", false, "recursively add files from folder")
 	recursiveLong := fs.Bool("recursive", false, "recursively add files from folder")
 	filter := fs.String("filter", "", "filter by extensions (comma-separated, e.g. \"md,go,js\")")
+	depth := fs.Int("depth", 10, "max recursion depth (non-git fallback only; 0 = unlimited)")
 
 	// Reorder args so flags come first (Go flag package stops at first positional arg)
 	args := os.Args[2:]
@@ -363,7 +364,7 @@ func cmdAdd() {
 			fmt.Fprintf(os.Stderr, "  Example: livemd add %s -r\n", pathArg)
 			os.Exit(1)
 		}
-		addFolder(absPath, port, *filter)
+		addFolder(absPath, port, *filter, *depth)
 		return
 	}
 
@@ -391,107 +392,48 @@ func addSingleFile(absPath string, port int) {
 	fmt.Printf("Watching: %s\n", filepath.Base(absPath))
 }
 
-// addFolder recursively scans a directory and adds all matching files to the watch list.
-// It filters files by extension using either defaultExtensions or a custom filter.
-// Hidden directories (starting with ".") are skipped during traversal.
-// If more than 500 files are found, it prompts for user confirmation before proceeding.
-func addFolder(folderPath string, port int, filterExts string) {
-	// Build extension filter
-	allowedExts := defaultExtensions
+// addFolder registers the folder with the daemon as a "followed" folder. The
+// daemon does the discovery (git-aware when applicable) and keeps watching for
+// new files — see folder.go.
+func addFolder(folderPath string, port int, filterExts string, maxDepth int) {
+	var exts []string
 	if filterExts != "" {
-		allowedExts = []string{}
 		for _, ext := range strings.Split(filterExts, ",") {
 			ext = strings.TrimSpace(ext)
+			if ext == "" {
+				continue
+			}
 			if !strings.HasPrefix(ext, ".") {
 				ext = "." + ext
 			}
-			allowedExts = append(allowedExts, strings.ToLower(ext))
+			exts = append(exts, strings.ToLower(ext))
 		}
 	}
 
-	// Collect all matching files
-	var files []string
-	err := filepath.Walk(folderPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip files we can't access
-		}
-		if info.IsDir() {
-			// Skip hidden directories
-			if strings.HasPrefix(info.Name(), ".") && path != folderPath {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// Check extension
-		ext := strings.ToLower(filepath.Ext(path))
-		for _, allowed := range allowedExts {
-			if ext == allowed {
-				files = append(files, path)
-				break
-			}
-		}
-		return nil
+	body, _ := json.Marshal(map[string]interface{}{
+		"path":       folderPath,
+		"extensions": exts,
+		"recursive":  true,
+		"depth":      maxDepth,
+		"live":       true,
 	})
-
+	resp, err := http.Post(fmt.Sprintf("http://localhost:%d/api/folders", port), "application/json", bytes.NewReader(body))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error scanning folder: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", string(respBody))
 		os.Exit(1)
 	}
 
-	if len(files) == 0 {
-		fmt.Println("No supported files found in folder.")
-		if filterExts != "" {
-			fmt.Printf("  Filter: %s\n", filterExts)
-		}
-		return
+	fmt.Printf("Following: %s\n", folderPath)
+	if filterExts != "" {
+		fmt.Printf("  Filter: %s\n", filterExts)
 	}
-
-	// Warn about large folder
-	const warnThreshold = 500
-	if len(files) > warnThreshold {
-		fmt.Printf("Warning: Found %d files. This may affect performance.\n", len(files))
-		fmt.Print("Continue? [y/N] ")
-		var response string
-		fmt.Scanln(&response)
-		if strings.ToLower(response) != "y" {
-			fmt.Println("Cancelled.")
-			return
-		}
-	}
-
-	fmt.Printf("Found %d files in %s\n", len(files), folderPath)
-
-	// Add each file
-	added := 0
-	skipped := 0
-	for _, file := range files {
-		body, _ := json.Marshal(map[string]string{"path": file})
-		resp, err := http.Post(fmt.Sprintf("http://localhost:%d/api/watch", port), "application/json", bytes.NewReader(body))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Error: %s - %v\n", filepath.Base(file), err)
-			continue
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			added++
-			fmt.Printf("  + %s\n", filepath.Base(file))
-		} else {
-			respBody, _ := io.ReadAll(resp.Body)
-			// Don't print "already watching" as an error
-			if strings.Contains(string(respBody), "already watching") {
-				skipped++
-			} else {
-				fmt.Fprintf(os.Stderr, "  ! %s: %s\n", filepath.Base(file), string(respBody))
-			}
-		}
-		resp.Body.Close()
-	}
-
-	fmt.Printf("\nAdded %d file(s)", added)
-	if skipped > 0 {
-		fmt.Printf(" (%d already watched)", skipped)
-	}
-	fmt.Println()
+	fmt.Println("  New files appearing here will be auto-added (toggle off in the sidebar to disable).")
 }
 
 // cmdRemove handles the "livemd remove" command.
